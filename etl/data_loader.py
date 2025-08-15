@@ -1,12 +1,483 @@
-"""Data loading utilities (CSV, databases, APIs).
+"""Data loading utilities (CSV, databases, APIs) and ETL runner.
 
-This module will host ETL functions for reading raw data sources and returning
-normalized pandas DataFrames ready for transformation.
+- Connects to SQLite database via SQLAlchemy
+- Loads orders, restaurants, clients from SQLite
+- Parses Excel files with tourist flow
+- Retrieves daily weather from Open-Meteo with caching in SQLite (weather_cache)
+- Exposes a CLI: `python etl/data_loader.py --run` to build merged dataset
 """
 
-from typing import Any
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+import pandas as pd
+import requests
+from sqlalchemy import (
+    Column,
+    Date,
+    Float,
+    Integer,
+    MetaData,
+    String,
+    Table,
+    UniqueConstraint,
+    create_engine,
+    inspect,
+    select,
+)
+from sqlalchemy.engine import Engine
+from sqlalchemy.sql import and_
+
+from config import get_env
 
 
-def load_placeholder() -> Any:
-    """Placeholder to keep module importable in step 1."""
+DEFAULT_SQLITE_PATH = get_env("SQLITE_PATH", "/workspace/database.sqlite")
+OPEN_METEO_ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/era5"
+OPEN_METEO_FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
+
+
+def get_engine(sqlite_path: Optional[str] = None) -> Engine:
+    """Create SQLAlchemy engine for SQLite."""
+    db_path = sqlite_path or DEFAULT_SQLITE_PATH
+    conn_str = f"sqlite:///{db_path}"
+    engine = create_engine(conn_str, future=True)
+    return engine
+
+
+def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df.columns = [str(c).strip().lower() for c in df.columns]
+    return df
+
+
+def _find_first_column(df: pd.DataFrame, candidates: Iterable[str]) -> Optional[str]:
+    cols = set(df.columns)
+    for name in candidates:
+        if name in cols:
+            return name
     return None
+
+
+def ensure_weather_cache_table(engine: Engine) -> Table:
+    """Ensure `weather_cache` table exists in SQLite with appropriate schema."""
+    metadata = MetaData()
+    weather_cache = Table(
+        "weather_cache",
+        metadata,
+        Column("id", Integer, primary_key=True, autoincrement=True),
+        Column("restaurant_id", Integer, nullable=False),
+        Column("date", Date, nullable=False),
+        Column("temp", Float),
+        Column("rain", Float),
+        Column("wind", Float),
+        Column("humidity", Float),
+        Column("fetched_at", String(32)),
+        UniqueConstraint("restaurant_id", "date", name="ux_weather_restaurant_date"),
+    )
+    metadata.create_all(engine, tables=[weather_cache])
+    return weather_cache
+
+
+def _read_sql_table(engine: Engine, table_name: str) -> pd.DataFrame:
+    try:
+        df = pd.read_sql_table(table_name, con=engine)
+        return _normalize_columns(df)
+    except Exception:
+        return pd.DataFrame()
+
+
+def _resolve_table_name(engine: Engine, preferred: str, aliases: Iterable[str]) -> Optional[str]:
+    inspector = inspect(engine)
+    all_tables = set(inspector.get_table_names())
+    if preferred in all_tables:
+        return preferred
+    for a in aliases:
+        if a in all_tables:
+            return a
+    return None
+
+
+def load_restaurants(engine: Engine) -> pd.DataFrame:
+    table = _resolve_table_name(engine, "restaurants", aliases=["restaurant", "stores"])
+    if not table:
+        return pd.DataFrame(columns=["id", "name", "latitude", "longitude"])  # empty placeholder
+    df = _read_sql_table(engine, table)
+    id_col = _find_first_column(df, ["id", "restaurant_id", "rest_id", "store_id"]) or "id"
+    name_col = _find_first_column(df, ["name", "restaurant_name", "title"]) or "name"
+    lat_col = _find_first_column(df, ["latitude", "lat", "y"]) or "latitude"
+    lon_col = _find_first_column(df, ["longitude", "lon", "lng", "x"]) or "longitude"
+    out = df[[id_col, name_col, lat_col, lon_col]].rename(
+        columns={id_col: "id", name_col: "name", lat_col: "latitude", lon_col: "longitude"}
+    )
+    out = out.dropna(subset=["id", "latitude", "longitude"]).copy()
+    out["id"] = out["id"].astype(int)
+    return out
+
+
+def load_clients(engine: Engine) -> pd.DataFrame:
+    table = _resolve_table_name(engine, "clients", aliases=["customers", "users", "customer"])
+    if not table:
+        return pd.DataFrame()
+    return _read_sql_table(engine, table)
+
+
+def load_orders(engine: Engine) -> pd.DataFrame:
+    """Load orders and aggregate to daily per restaurant.
+
+    Output columns: restaurant_id, date, total_sales, orders_count
+    """
+    table = _resolve_table_name(
+        engine, "orders", aliases=["order", "sales", "transactions", "fake_orders", "orders_table"]
+    )
+    if not table:
+        # Fallback empty
+        return pd.DataFrame(columns=["restaurant_id", "date", "total_sales", "orders_count"])
+
+    df = _read_sql_table(engine, table)
+
+    # Identify columns
+    date_col = _find_first_column(df, ["date", "order_date", "created_at", "created", "time", "datetime"]) or "date"
+    rest_col = _find_first_column(df, ["restaurant_id", "rest_id", "store_id", "restaurant"]) or "restaurant_id"
+    amount_col = _find_first_column(
+        df,
+        [
+            "total_sales",
+            "total",
+            "amount",
+            "revenue",
+            "grand_total",
+            "price",
+            "order_amount",
+            "subtotal",
+        ],
+    )
+    qty_col = _find_first_column(df, ["quantity", "qty", "count", "order_count"])  # optional
+
+    # Normalize date and restaurant
+    if date_col not in df.columns:
+        return pd.DataFrame(columns=["restaurant_id", "date", "total_sales", "orders_count"])
+
+    out = df.copy()
+    out["date"] = pd.to_datetime(out[date_col]).dt.normalize()
+    out = out.dropna(subset=[rest_col])
+    out["restaurant_id"] = out[rest_col].astype(int)
+
+    # Build sales amount and order count
+    if amount_col and amount_col in out.columns:
+        out["_amount"] = pd.to_numeric(out[amount_col], errors="coerce")
+    else:
+        # Try price * quantity fallback if available
+        price_col = _find_first_column(out, ["price", "unit_price", "avg_price"])  # optional
+        if price_col and qty_col and price_col in out.columns and qty_col in out.columns:
+            out["_amount"] = pd.to_numeric(out[price_col], errors="coerce") * pd.to_numeric(
+                out[qty_col], errors="coerce"
+            )
+        else:
+            out["_amount"] = 0.0
+
+    if qty_col and qty_col in out.columns:
+        out["_qty"] = pd.to_numeric(out[qty_col], errors="coerce").fillna(0)
+    else:
+        # Fallback: count each row as a single order
+        out["_qty"] = 1
+
+    daily = (
+        out.groupby(["restaurant_id", "date"], as_index=False)
+        .agg(total_sales=("_amount", "sum"), orders_count=("_qty", "sum"))
+        .sort_values(["restaurant_id", "date"])
+        .reset_index(drop=True)
+    )
+    return daily
+
+
+def parse_tourist_flow(excel_paths: List[str]) -> pd.DataFrame:
+    """Parse multiple Excel files and return a unified daily tourist_flow DataFrame.
+
+    Heuristics:
+      - Identify a date column (or year+month(+day) combo)
+      - Identify a numeric visitors column
+      - Aggregate to daily frequency
+    """
+    frames: List[pd.DataFrame] = []
+    for path in excel_paths:
+        try:
+            # Read all sheets; some files might contain the series in later sheets
+            sheets = pd.read_excel(path, sheet_name=None, engine="xlrd")
+        except Exception:
+            # Try default engine for compatibility
+            try:
+                sheets = pd.read_excel(path, sheet_name=None)
+            except Exception:
+                continue
+        for _, df in (sheets or {}).items():
+            if not isinstance(df, pd.DataFrame) or df.empty:
+                continue
+            df = _normalize_columns(df)
+            # Try direct date column
+            date_col = _find_first_column(df, ["date", "tanggal", "day", "tgl", "periode", "period"])
+            year_col = _find_first_column(df, ["year", "tahun", "yr"])
+            month_col = _find_first_column(df, ["month", "bulan", "mo"])  # 1..12 or names
+            day_col = _find_first_column(df, ["day", "hari"])  # optional
+
+            # Try to pick a value column by typical names
+            value_col = _find_first_column(
+                df,
+                [
+                    "visitors",
+                    "arrivals",
+                    "kunjungan",
+                    "jumlah",
+                    "total",
+                    "count",
+                    "wisatawan",
+                    "visitor",
+                    "tourists",
+                ],
+            )
+
+            work: Optional[pd.DataFrame] = None
+            if date_col and date_col in df.columns:
+                work = df[[date_col, value_col]].copy() if value_col else df[[date_col]].copy()
+                work.rename(columns={date_col: "date", value_col: "tourist_flow" if value_col else date_col}, inplace=True)
+                work["date"] = pd.to_datetime(work["date"], errors="coerce")
+            elif year_col and month_col:
+                cols = [year_col, month_col]
+                if day_col:
+                    cols.append(day_col)
+                work = df[cols + ([value_col] if value_col else [])].copy()
+                work.rename(columns={year_col: "year", month_col: "month", day_col: "day" if day_col else month_col}, inplace=True)
+                # Map month names to numbers if needed
+                if work["month"].dtype == object:
+                    month_map = {m.lower(): i for i, m in enumerate([
+                        "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"
+                    ], start=1)}
+                    work["month"] = work["month"].astype(str).str[:3].str.lower().map(month_map)
+                work["day"] = work["day"].fillna(1) if "day" in work.columns else 1
+                work["date"] = pd.to_datetime(
+                    dict(year=pd.to_numeric(work["year"], errors="coerce"),
+                         month=pd.to_numeric(work["month"], errors="coerce"),
+                         day=pd.to_numeric(work["day"], errors="coerce")),
+                    errors="coerce"
+                )
+                if value_col:
+                    work.rename(columns={value_col: "tourist_flow"}, inplace=True)
+            else:
+                # Could not parse this sheet
+                continue
+
+            if work is None or work.empty:
+                continue
+            work = work.dropna(subset=["date"]).copy()
+            if "tourist_flow" not in work.columns:
+                # Try to infer numeric column if not set
+                numeric_cols = [c for c in work.columns if c != "date" and pd.api.types.is_numeric_dtype(work[c])]
+                if numeric_cols:
+                    work["tourist_flow"] = work[numeric_cols[0]]
+                else:
+                    work["tourist_flow"] = float("nan")
+            work = work[["date", "tourist_flow"]]
+            frames.append(work)
+
+    if not frames:
+        return pd.DataFrame(columns=["date", "tourist_flow"])
+
+    all_flow = pd.concat(frames, ignore_index=True)
+    all_flow = all_flow.dropna(subset=["date"]).copy()
+
+    # If multiple entries per date, sum them
+    all_flow = (
+        all_flow.groupby(all_flow["date"].dt.normalize(), as_index=False)["tourist_flow"].sum()
+        .rename(columns={"date": "date"})
+        .sort_values("date")
+        .reset_index(drop=True)
+    )
+    return all_flow
+
+
+def _select_daily_from_open_meteo(
+    latitude: float,
+    longitude: float,
+    date: dt.date,
+) -> Dict[str, Optional[float]]:
+    """Query Open-Meteo for a single date and return daily variables."""
+    start = end = date.strftime("%Y-%m-%d")
+    today = dt.date.today()
+
+    if date <= today:
+        base_url = OPEN_METEO_ARCHIVE_URL
+        params = {
+            "latitude": latitude,
+            "longitude": longitude,
+            "start_date": start,
+            "end_date": end,
+            "daily": "temperature_2m_mean,precipitation_sum,windspeed_10m_max,relative_humidity_2m_mean",
+            "timezone": "auto",
+        }
+    else:
+        base_url = OPEN_METEO_FORECAST_URL
+        params = {
+            "latitude": latitude,
+            "longitude": longitude,
+            "start_date": start,
+            "end_date": end,
+            "daily": "temperature_2m_max,precipitation_sum,windspeed_10m_max,relative_humidity_2m_mean",
+            "timezone": "auto",
+        }
+
+    resp = requests.get(base_url, params=params, timeout=30)
+    resp.raise_for_status()
+    data = resp.json()
+
+    daily = data.get("daily") or {}
+    dates = daily.get("time") or []
+    if not dates:
+        return {"temp": None, "rain": None, "wind": None, "humidity": None}
+
+    # Extract first (and only) entry for the date range
+    idx = 0
+    temp_key = "temperature_2m_mean" if "temperature_2m_mean" in daily else "temperature_2m_max"
+    temp = (daily.get(temp_key) or [None])[idx]
+    rain = (daily.get("precipitation_sum") or [None])[idx]
+    wind = (daily.get("windspeed_10m_max") or [None])[idx]
+    humidity = (daily.get("relative_humidity_2m_mean") or [None])[idx]
+
+    return {"temp": temp, "rain": rain, "wind": wind, "humidity": humidity}
+
+
+def get_weather_for_restaurant(restaurant_id: int, date: dt.date, engine: Optional[Engine] = None) -> Dict[str, Optional[float]]:
+    """Get daily weather for a restaurant/date, using SQLite cache to avoid repeated API calls.
+
+    If engine is not provided, a default SQLite engine is created using env SQLITE_PATH or /workspace/database.sqlite.
+    """
+    if engine is None:
+        engine = get_engine()
+    inspector = inspect(engine)
+    restaurants_table = _resolve_table_name(engine, "restaurants", aliases=["restaurant", "stores"]) or "restaurants"
+
+    # Ensure cache table exists
+    weather_cache = ensure_weather_cache_table(engine)
+
+    # Fetch restaurant coordinates
+    with engine.begin() as conn:
+        if restaurants_table in inspector.get_table_names():
+            df_rest = pd.read_sql_query(f"SELECT * FROM {restaurants_table} WHERE id = :rid", conn, params={"rid": restaurant_id})
+        else:
+            df_rest = pd.DataFrame()
+    if df_rest.empty:
+        return {"temp": None, "rain": None, "wind": None, "humidity": None}
+
+    rest_norm = _normalize_columns(df_rest)
+    lat_col = _find_first_column(rest_norm, ["latitude", "lat"]) or "latitude"
+    lon_col = _find_first_column(rest_norm, ["longitude", "lon", "lng"]) or "longitude"
+    latitude = float(rest_norm.iloc[0][lat_col])
+    longitude = float(rest_norm.iloc[0][lon_col])
+
+    # Check cache first
+    with engine.begin() as conn:
+        stmt = select(weather_cache.c.temp, weather_cache.c.rain, weather_cache.c.wind, weather_cache.c.humidity).where(
+            and_(weather_cache.c.restaurant_id == restaurant_id, weather_cache.c.date == date)
+        )
+        row = conn.execute(stmt).fetchone()
+        if row:
+            return {"temp": row.temp, "rain": row.rain, "wind": row.wind, "humidity": row.humidity}
+
+    # Fetch from API and cache
+    daily = _select_daily_from_open_meteo(latitude, longitude, date)
+
+    with engine.begin() as conn:
+        conn.execute(
+            weather_cache.insert().values(
+                restaurant_id=restaurant_id,
+                date=date,
+                temp=daily.get("temp"),
+                rain=daily.get("rain"),
+                wind=daily.get("wind"),
+                humidity=daily.get("humidity"),
+                fetched_at=dt.datetime.utcnow().isoformat(timespec="seconds"),
+            )
+        )
+
+    return daily
+
+
+def get_weather_series_for_restaurant(
+    restaurant_id: int, start_date: dt.date, end_date: dt.date, engine: Engine
+) -> pd.DataFrame:
+    """Return daily weather series for the specified date range using cache+API."""
+    dates = pd.date_range(start=start_date, end=end_date, freq="D").date
+    records: List[Dict[str, Any]] = []
+    for d in dates:
+        vals = get_weather_for_restaurant(restaurant_id, d, engine)
+        records.append({
+            "restaurant_id": restaurant_id,
+            "date": pd.to_datetime(d),
+            "temp": vals.get("temp"),
+            "rain": vals.get("rain"),
+            "wind": vals.get("wind"),
+            "humidity": vals.get("humidity"),
+        })
+    return pd.DataFrame.from_records(records)
+
+
+def run_full_build(
+    sqlite_path: Optional[str] = None,
+    start_date: str = "2024-01-01",
+    end_date: str = "2025-12-31",
+    output_csv_path: str = "/workspace/data/merged_dataset.csv",
+    excel_paths: Optional[List[str]] = None,
+) -> pd.DataFrame:
+    """Run the full ETL to build merged dataset and save to CSV."""
+    engine = get_engine(sqlite_path)
+
+    # Late import to avoid circular
+    from etl.feature_engineering import build_and_save_dataset
+
+    merged = build_and_save_dataset(
+        engine=engine,
+        start_date=start_date,
+        end_date=end_date,
+        output_csv_path=output_csv_path,
+        excel_paths=excel_paths,
+    )
+    return merged
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="ETL runner to build merged dataset")
+    parser.add_argument("--run", action="store_true", help="Run full dataset build")
+    parser.add_argument("--sqlite", type=str, default=None, help="Path to SQLite database (default: env SQLITE_PATH or /workspace/database.sqlite)")
+    parser.add_argument("--start", type=str, default="2024-01-01", help="Start date YYYY-MM-DD")
+    parser.add_argument("--end", type=str, default="2025-12-31", help="End date YYYY-MM-DD")
+    parser.add_argument("--out", type=str, default="/workspace/data/merged_dataset.csv", help="Output CSV path")
+    parser.add_argument(
+        "--excel",
+        type=str,
+        nargs="*",
+        default=[
+            "/workspace/1.-Data-Kunjungan-2025-3.xls",
+            "/workspace/Table-1-7-Final-1-1.xls",
+        ],
+        help="Paths to Excel files with tourist flow",
+    )
+
+    args = parser.parse_args()
+
+    if args.run:
+        merged = run_full_build(
+            sqlite_path=args.sqlite,
+            start_date=args.start,
+            end_date=args.end,
+            output_csv_path=args.out,
+            excel_paths=args.excel,
+        )
+        print(f"Built dataset with {len(merged)} rows -> {args.out}")
+    else:
+        print("Nothing to do. Use --run to execute ETL.")
+
+
+if __name__ == "__main__":
+    main()

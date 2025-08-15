@@ -9,3 +9,4 @@ shap
 requests
 python-dotenv
 pytest
+xlrd
