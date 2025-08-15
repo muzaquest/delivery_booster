@@ -222,7 +222,7 @@ def _build_marketing_section(restaurant_id: Optional[int], start: date, end: dat
             "ads_sales": float(ads_sales),
             "avg_ads_order_value": float(avg_ads_order_value) if avg_ads_order_value is not None else None,
             "uplift_estimations": uplift,
-            "cpc": float(spend / impr) if impr else None,
+            "cpc": float(spend / menu) if menu else None,
             "cpa": float(spend / ads_orders) if ads_orders else None,
         }
 
