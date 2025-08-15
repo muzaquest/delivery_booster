@@ -19,6 +19,16 @@ from etl.data_loader import (
 )
 
 
+# Placeholder: holidays loader function signature (will implement in holidays_loader.py)
+def load_holidays_df(start_date: str, end_date: str) -> pd.DataFrame:
+    try:
+        from etl.holidays_loader import load_holidays_df as _impl
+
+        return _impl(start_date, end_date)
+    except Exception:
+        return pd.DataFrame(columns=["date", "holiday_name", "region"])  # empty if unavailable
+
+
 def _generate_temporal_features(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df["day_of_week"] = df["date"].dt.weekday
@@ -66,15 +76,16 @@ def build_and_save_dataset(
     end_date: str = "2025-12-31",
     output_csv_path: str = "/workspace/data/merged_dataset.csv",
     excel_paths: Optional[list[str]] = None,
+    fake_orders_df: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
     """Build merged dataset and save to CSV.
 
     Steps:
-      1) Load orders and restaurants from SQLite
+      1) Load orders and restaurants from SQLite (excluding fake orders)
       2) Aggregate orders to daily per restaurant
       3) Parse tourist flow from Excel and resample to daily
       4) Pull weather per (restaurant, date) from cache/API
-      5) Merge and generate features
+      5) Merge holidays and generate features
       6) Save to CSV
     """
     if excel_paths is None:
@@ -84,7 +95,7 @@ def build_and_save_dataset(
         ]
 
     restaurants_df = load_restaurants(engine)
-    orders_daily = load_orders(engine)
+    orders_daily = load_orders(engine, fake_orders_df=fake_orders_df)
 
     # Restrict to requested period
     orders_daily = orders_daily[(orders_daily["date"] >= pd.to_datetime(start_date)) & (orders_daily["date"] <= pd.to_datetime(end_date))]
@@ -92,7 +103,6 @@ def build_and_save_dataset(
     # Tourist flow (date-level), resample to daily and forward-fill
     tourist_flow = parse_tourist_flow(excel_paths)
     if tourist_flow.empty:
-        # Create an empty frame with date to allow merge without error
         tourist_flow = pd.DataFrame({"date": pd.date_range(start_date, end_date), "tourist_flow": 0.0})
     else:
         tourist_flow = tourist_flow.copy()
@@ -101,8 +111,16 @@ def build_and_save_dataset(
             tourist_flow.set_index("date")["tourist_flow"].resample("D").mean().ffill().bfill().reset_index()
         )
 
+    # Holidays
+    holidays_df = load_holidays_df(start_date, end_date)
+    holidays_df = holidays_df.copy()
+    if not holidays_df.empty:
+        holidays_df["date"] = pd.to_datetime(holidays_df["date"]).dt.normalize()
+        holidays_flags = holidays_df.drop_duplicates(["date"]).assign(is_holiday=1)[["date", "is_holiday"]]
+    else:
+        holidays_flags = pd.DataFrame({"date": pd.date_range(start_date, end_date), "is_holiday": 0})
+
     # Build weather dataset for each (restaurant_id, date) present in orders
-    # This limits API calls to dates with sales activity
     unique_restaurant_ids = orders_daily["restaurant_id"].unique().tolist()
     all_weather_parts: list[pd.DataFrame] = []
     for restaurant_id in unique_restaurant_ids:
@@ -115,20 +133,21 @@ def build_and_save_dataset(
         all_weather_parts.append(weather_df)
 
     if len(all_weather_parts) == 0:
-        # fallback to empty weather
         weather_daily = pd.DataFrame(columns=["restaurant_id", "date", "temp", "rain", "wind", "humidity"])
     else:
         weather_daily = pd.concat(all_weather_parts, ignore_index=True)
 
-    # Merge (orders x weather on restaurant_id+date) then add tourist flow on date
+    # Merge
     merged = orders_daily.merge(weather_daily, on=["restaurant_id", "date"], how="left")
     merged = merged.merge(tourist_flow, on="date", how="left")
+    merged = merged.merge(holidays_flags, on="date", how="left")
+    merged["is_holiday"] = merged["is_holiday"].fillna(0).astype(int)
 
     # Temporal features
     merged["date"] = pd.to_datetime(merged["date"])  # ensure dtype
     merged = _generate_temporal_features(merged)
 
-    # Lags for sales
+    # Lags and rolling
     merged = _generate_lags(
         merged,
         group_cols=["restaurant_id"],
@@ -136,7 +155,6 @@ def build_and_save_dataset(
         lags=[1, 3, 7],
     )
 
-    # Lags for weather and tourist flow (1–7)
     weather_cols = ["temp", "rain", "wind", "humidity", "tourist_flow"]
     merged = _generate_lags(
         merged,
@@ -145,7 +163,6 @@ def build_and_save_dataset(
         lags=list(range(1, 8)),
     )
 
-    # Rolling means (7-day)
     merged = _generate_rolling_means(
         merged,
         group_cols=["restaurant_id"],
@@ -159,6 +176,5 @@ def build_and_save_dataset(
         windows=[7],
     )
 
-    # Save
     merged.sort_values(["restaurant_id", "date"]).to_csv(output_csv_path, index=False)
     return merged

@@ -16,6 +16,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import pandas as pd
 import requests
+import re
 from sqlalchemy import (
     Column,
     Date,
@@ -125,19 +126,113 @@ def load_clients(engine: Engine) -> pd.DataFrame:
     return _read_sql_table(engine, table)
 
 
-def load_orders(engine: Engine) -> pd.DataFrame:
-    """Load orders and aggregate to daily per restaurant.
+def _read_first_line(path: str) -> Optional[str]:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            line = f.readline().strip()
+            return line if line else None
+    except Exception:
+        return None
 
-    Output columns: restaurant_id, date, total_sales, orders_count
+
+def _extract_google_sheet_id(sheet_url_or_id: str) -> Optional[str]:
+    # Accept either full URL or bare spreadsheetId
+    if re.fullmatch(r"[A-Za-z0-9_-]{40,}", sheet_url_or_id):
+        return sheet_url_or_id
+    m = re.search(r"/spreadsheets/d/([A-Za-z0-9_-]+)", sheet_url_or_id)
+    if m:
+        return m.group(1)
+    return None
+
+
+def _google_api_key() -> Optional[str]:
+    # Use env GOOGLE_API_KEY, or fallback to provided key as default
+    return get_env("GOOGLE_API_KEY", "AIzaSyA5sYxoUNI0hlsa20lMqDHHLAL80qRIn0w")
+
+
+def _fetch_google_sheet_first_sheet_title(spreadsheet_id: str, api_key: str) -> Optional[str]:
+    url = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}?fields=sheets(properties(title))&key={api_key}"
+    resp = requests.get(url, timeout=30)
+    if not resp.ok:
+        return None
+    data = resp.json()
+    sheets = data.get("sheets") or []
+    if not sheets:
+        return None
+    title = ((sheets[0] or {}).get("properties") or {}).get("title")
+    return title
+
+
+def _fetch_google_sheet_values(spreadsheet_id: str, range_a1: str, api_key: str) -> Optional[pd.DataFrame]:
+    url = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values/{requests.utils.quote(range_a1, safe='')}?majorDimension=ROWS&key={api_key}"
+    resp = requests.get(url, timeout=30)
+    if not resp.ok:
+        return None
+    data = resp.json()
+    values = data.get("values") or []
+    if not values:
+        return None
+    header = [str(h).strip().lower() for h in values[0]]
+    rows = values[1:]
+    # Normalize row lengths
+    normalized_rows = [r + [None] * (len(header) - len(r)) for r in rows]
+    df = pd.DataFrame(normalized_rows, columns=header)
+    return df
+
+
+def load_fake_orders(sheet_url_or_id: Optional[str] = None) -> pd.DataFrame:
+    """Load fake orders list from a Google Sheet.
+
+    The sheet is expected to include at least one of: order_id, order_number.
+    Additional columns (restaurant_id, date, platform) are optional.
     """
+    if not sheet_url_or_id:
+        # Try to read from file '/workspace/Fake orders'
+        sheet_url_or_id = _read_first_line("/workspace/Fake orders") or ""
+    spreadsheet_id = _extract_google_sheet_id(sheet_url_or_id)
+    api_key = _google_api_key()
+    if not spreadsheet_id or not api_key:
+        return pd.DataFrame()
+
+    sheet_title = _fetch_google_sheet_first_sheet_title(spreadsheet_id, api_key) or "Sheet1"
+    df = _fetch_google_sheet_values(spreadsheet_id, f"{sheet_title}!A:Z", api_key)
+    if df is None or df.empty:
+        # Try fallback title guesses
+        for guess in ("Sheet1", "Fake Orders", "Sheet", "Лист1"):
+            df = _fetch_google_sheet_values(spreadsheet_id, f"{guess}!A:Z", api_key)
+            if df is not None and not df.empty:
+                break
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    df = _normalize_columns(df)
+    # Normalize common id column names
+    if "order_id" not in df.columns:
+        oid = _find_first_column(df, ["id", "order", "order_number", "orderid", "номер заказа"])
+        if oid:
+            df.rename(columns={oid: "order_id"}, inplace=True)
+    return df
+
+
+def load_orders_raw(engine: Engine) -> pd.DataFrame:
     table = _resolve_table_name(
         engine, "orders", aliases=["order", "sales", "transactions", "fake_orders", "orders_table"]
     )
     if not table:
-        # Fallback empty
-        return pd.DataFrame(columns=["restaurant_id", "date", "total_sales", "orders_count"])
-
+        return pd.DataFrame()
     df = _read_sql_table(engine, table)
+    return df
+
+
+def load_orders(engine: Engine, fake_orders_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+    """Load orders, exclude fake orders if provided, and aggregate to daily per restaurant.
+
+    Output columns: restaurant_id, date, total_sales, orders_count
+    """
+    df = load_orders_raw(engine)
+    if df.empty:
+        return pd.DataFrame(columns=["restaurant_id", "date", "total_sales", "orders_count"])
+    df = _normalize_columns(df)
 
     # Identify columns
     date_col = _find_first_column(df, ["date", "order_date", "created_at", "created", "time", "datetime"]) or "date"
@@ -156,21 +251,31 @@ def load_orders(engine: Engine) -> pd.DataFrame:
         ],
     )
     qty_col = _find_first_column(df, ["quantity", "qty", "count", "order_count"])  # optional
+    order_id_col = _find_first_column(df, ["order_id", "id", "order", "order_number"])  # for fake filter
+
+    # Filter fake orders by order_id if possible
+    if fake_orders_df is not None and not fake_orders_df.empty and order_id_col:
+        fod = _normalize_columns(fake_orders_df)
+        if "order_id" in fod.columns:
+            try:
+                mask = ~df[order_id_col].astype(str).isin(fod["order_id"].astype(str))
+                df = df[mask].copy()
+            except Exception:
+                pass
 
     # Normalize date and restaurant
     if date_col not in df.columns:
         return pd.DataFrame(columns=["restaurant_id", "date", "total_sales", "orders_count"])
 
     out = df.copy()
-    out["date"] = pd.to_datetime(out[date_col]).dt.normalize()
-    out = out.dropna(subset=[rest_col])
+    out["date"] = pd.to_datetime(out[date_col], errors="coerce").dt.normalize()
+    out = out.dropna(subset=[rest_col, "date"])  # drop invalid
     out["restaurant_id"] = out[rest_col].astype(int)
 
     # Build sales amount and order count
     if amount_col and amount_col in out.columns:
         out["_amount"] = pd.to_numeric(out[amount_col], errors="coerce")
     else:
-        # Try price * quantity fallback if available
         price_col = _find_first_column(out, ["price", "unit_price", "avg_price"])  # optional
         if price_col and qty_col and price_col in out.columns and qty_col in out.columns:
             out["_amount"] = pd.to_numeric(out[price_col], errors="coerce") * pd.to_numeric(
@@ -182,7 +287,6 @@ def load_orders(engine: Engine) -> pd.DataFrame:
     if qty_col and qty_col in out.columns:
         out["_qty"] = pd.to_numeric(out[qty_col], errors="coerce").fillna(0)
     else:
-        # Fallback: count each row as a single order
         out["_qty"] = 1
 
     daily = (
@@ -429,6 +533,7 @@ def run_full_build(
     end_date: str = "2025-12-31",
     output_csv_path: str = "/workspace/data/merged_dataset.csv",
     excel_paths: Optional[List[str]] = None,
+    fake_orders_sheet: Optional[str] = None,
 ) -> pd.DataFrame:
     """Run the full ETL to build merged dataset and save to CSV."""
     engine = get_engine(sqlite_path)
@@ -436,12 +541,15 @@ def run_full_build(
     # Late import to avoid circular
     from etl.feature_engineering import build_and_save_dataset
 
+    fake_df = load_fake_orders(fake_orders_sheet)
+
     merged = build_and_save_dataset(
         engine=engine,
         start_date=start_date,
         end_date=end_date,
         output_csv_path=output_csv_path,
         excel_paths=excel_paths,
+        fake_orders_df=fake_df,
     )
     return merged
 
@@ -463,6 +571,12 @@ def main() -> None:
         ],
         help="Paths to Excel files with tourist flow",
     )
+    parser.add_argument(
+        "--fake-orders-sheet",
+        type=str,
+        default=None,
+        help="Google Sheet URL or ID containing fake orders to exclude (defaults to reading '/workspace/Fake orders')",
+    )
 
     args = parser.parse_args()
 
@@ -473,6 +587,7 @@ def main() -> None:
             end_date=args.end,
             output_csv_path=args.out,
             excel_paths=args.excel,
+            fake_orders_sheet=args.fake_orders_sheet,
         )
         print(f"Built dataset with {len(merged)} rows -> {args.out}")
     else:
