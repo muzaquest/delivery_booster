@@ -6,7 +6,7 @@ import pandas as pd
 import numpy as np
 import calendar
 
-from etl.data_loader import get_engine
+from etl.data_loader import get_engine, load_fake_orders
 from etl.feature_engineering import parse_tourist_flow
 
 
@@ -410,6 +410,114 @@ def build_marketing_report(period: str, restaurant_id: Optional[int]) -> Dict:
     start = pd.to_datetime(start_str).date()
     end = pd.to_datetime(end_str).date()
     return _build_marketing_section(restaurant_id, start, end)
+
+
+def _get_restaurant_name(eng, restaurant_id: int) -> Optional[str]:
+    try:
+        df = pd.read_sql_query("SELECT name FROM restaurants WHERE id = ?", eng, params=(restaurant_id,))
+        if not df.empty:
+            return str(df.iloc[0]["name"]) if df.iloc[0]["name"] is not None else None
+    except Exception:
+        return None
+    return None
+
+
+def _fake_orders_for_platform_period(restaurant_name: Optional[str], platform_key: str, start: date, end: date) -> int:
+    try:
+        df = load_fake_orders()
+        if df is None or df.empty:
+            return 0
+        cols = {c.lower(): c for c in df.columns}
+        # Expected Russian headers per sample
+        col_name = cols.get('какой ресторан?') or cols.get('restaurant') or None
+        col_date = cols.get('дата накрутки') or cols.get('date') or None
+        col_cnt  = cols.get('количество сделанных фейк заказов?') or cols.get('count') or None
+        col_plat = cols.get('какая платформа?') or cols.get('platform') or None
+        if not (col_date and col_cnt and col_plat):
+            return 0
+        ff = df.copy()
+        # Filter by platform
+        ff[col_plat] = ff[col_plat].astype(str).str.lower()
+        key = platform_key.lower()
+        # Allow aliases
+        if key == 'gojek':
+            plat_mask = ff[col_plat].str.contains('gojek', na=False)
+        elif key == 'grab':
+            plat_mask = ff[col_plat].str.contains('grab', na=False)
+        else:
+            plat_mask = ff[col_plat].str.contains(key, na=False)
+        ff = ff[plat_mask]
+        # Filter by restaurant name if available
+        if restaurant_name and col_name in ff.columns:
+            ff[col_name] = ff[col_name].astype(str)
+            ff = ff[ff[col_name].str.contains(restaurant_name, case=False, na=False)]
+        # Filter by date range
+        ff[col_date] = pd.to_datetime(ff[col_date], errors='coerce').dt.date
+        ff = ff[(ff[col_date] >= start) & (ff[col_date] <= end)]
+        return int(pd.to_numeric(ff[col_cnt], errors='coerce').fillna(0).sum())
+    except Exception:
+        return 0
+
+
+def build_quality_report(period: str, restaurant_id: int) -> Dict:
+    eng = get_engine()
+    start_str, end_str = period.split("_")
+    start = pd.to_datetime(start_str).date()
+    end = pd.to_datetime(end_str).date()
+    # Ratings from GOJEK
+    q = (
+        "SELECT SUM(five_star_ratings) five, SUM(four_star_ratings) four, "
+        "SUM(three_star_ratings) three, SUM(two_star_ratings) two, SUM(one_star_ratings) one, "
+        "SUM(orders) orders, SUM(accepted_orders) accepted, SUM(cancelled_orders) cancelled, SUM(lost_orders) lost "
+        "FROM gojek_stats WHERE restaurant_id=? AND stat_date BETWEEN ? AND ?"
+    )
+    df = pd.read_sql_query(q, eng, params=(restaurant_id, str(start), str(end)))
+    row = df.iloc[0] if not df.empty else pd.Series()
+    five = int(row.get('five') or 0)
+    four = int(row.get('four') or 0)
+    three = int(row.get('three') or 0)
+    two = int(row.get('two') or 0)
+    one = int(row.get('one') or 0)
+    orders = int(row.get('orders') or 0)
+    cancelled = int(row.get('cancelled') or 0)
+    lost = int(row.get('lost') or 0)
+    # Fake from sheet
+    rest_name = _get_restaurant_name(eng, restaurant_id)
+    fake = _fake_orders_for_platform_period(rest_name, 'gojek', start, end)
+
+    total_ratings = five + four + three + two + one
+    idx = (5*five + 4*four + 3*three + 2*two + 1*one)/total_ratings if total_ratings else None
+    neg_1_2 = one + two
+    bad_not5 = total_ratings - five
+    # Successful orders base = orders − cancelled − lost − fake
+    successful = max(orders - cancelled - lost - fake, 0)
+    per_bad = (successful / bad_not5) if bad_not5 else None
+
+    return {
+        "ratings": {
+            "total": total_ratings,
+            "five": five,
+            "four": four,
+            "three": three,
+            "two": two,
+            "one": one,
+            "satisfaction_index": round(idx, 2) if idx is not None else None,
+            "negative_1_2": {
+                "count": neg_1_2,
+                "percent": round(neg_1_2/total_ratings*100, 1) if total_ratings else None,
+            },
+            "not_five": {
+                "count": bad_not5,
+                "percent": round(bad_not5/total_ratings*100, 1) if total_ratings else None,
+            },
+        },
+        "successful_orders_gojek": successful,
+        "orders_per_not_five_rating": round(per_bad, 1) if per_bad is not None else None,
+        "explain": {
+            "successful_orders": "Успешные = заказы − отменённые − потерянные − fake (по данным GOJEK и таблицы fake)",
+            "orders_per_not_five": "Сколько успешных заказов приходится на одну оценку ниже 5★",
+        }
+    }
 
 
 def build_basic_report(period: str, restaurant_id: Optional[int]) -> Dict:
