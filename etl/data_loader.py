@@ -527,6 +527,130 @@ def get_weather_series_for_restaurant(
     return pd.DataFrame.from_records(records)
 
 
+def load_operations(engine: Engine) -> pd.DataFrame:
+    table = _resolve_table_name(engine, "operations", aliases=["ops", "operation_metrics"])
+    if not table:
+        return pd.DataFrame(columns=[
+            "restaurant_id", "date", "accepting_time", "delivery_time", "preparation_time", "rating", "repeat_customers"
+        ])
+    df = _read_sql_table(engine, table)
+    df = _normalize_columns(df)
+    date_col = _find_first_column(df, ["date", "day", "recorded_at"]) or "date"
+    rest_col = _find_first_column(df, ["restaurant_id", "rest_id", "store_id"]) or "restaurant_id"
+    out = pd.DataFrame()
+    try:
+        out = pd.DataFrame({
+            "restaurant_id": pd.to_numeric(df[rest_col], errors="coerce").astype("Int64"),
+            "date": pd.to_datetime(df[date_col], errors="coerce").dt.normalize(),
+            "accepting_time": pd.to_numeric(df.get("accepting_time"), errors="coerce"),
+            "delivery_time": pd.to_numeric(df.get("delivery_time"), errors="coerce"),
+            "preparation_time": pd.to_numeric(df.get("preparation_time"), errors="coerce"),
+            "rating": pd.to_numeric(df.get("rating"), errors="coerce"),
+            "repeat_customers": pd.to_numeric(df.get("repeat_customers"), errors="coerce"),
+        })
+    except Exception:
+        return pd.DataFrame(columns=[
+            "restaurant_id", "date", "accepting_time", "delivery_time", "preparation_time", "rating", "repeat_customers"
+        ])
+    out = out.dropna(subset=["restaurant_id", "date"]).copy()
+    out["restaurant_id"] = out["restaurant_id"].astype(int)
+    return out
+
+
+def load_marketing(engine: Engine) -> pd.DataFrame:
+    table = _resolve_table_name(engine, "marketing", aliases=["ads", "adspend", "campaigns"])
+    if not table:
+        return pd.DataFrame(columns=[
+            "restaurant_id", "date", "ads_spend", "roas", "impressions", "clicks"
+        ])
+    df = _read_sql_table(engine, table)
+    df = _normalize_columns(df)
+    date_col = _find_first_column(df, ["date", "day", "recorded_at"]) or "date"
+    rest_col = _find_first_column(df, ["restaurant_id", "rest_id", "store_id"]) or "restaurant_id"
+    spend_col = _find_first_column(df, ["ads_spend", "ad_spend", "spend", "budget"]) or "ads_spend"
+    roas_col = _find_first_column(df, ["roas"]) or "roas"
+    impr_col = _find_first_column(df, ["impressions", "impr"]) or "impressions"
+    clicks_col = _find_first_column(df, ["clicks"]) or "clicks"
+
+    out = pd.DataFrame({
+        "restaurant_id": pd.to_numeric(df[rest_col], errors="coerce").astype("Int64"),
+        "date": pd.to_datetime(df[date_col], errors="coerce").dt.normalize(),
+        "ads_spend": pd.to_numeric(df.get(spend_col), errors="coerce"),
+        "roas": pd.to_numeric(df.get(roas_col), errors="coerce"),
+        "impressions": pd.to_numeric(df.get(impr_col), errors="coerce"),
+        "clicks": pd.to_numeric(df.get(clicks_col), errors="coerce"),
+    })
+    out = out.dropna(subset=["restaurant_id", "date"]).copy()
+    out["restaurant_id"] = out["restaurant_id"].astype(int)
+    return out
+
+
+def load_orders_platform_daily(engine: Engine, fake_orders_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+    """Load orders, exclude fake orders if provided, and aggregate to daily per restaurant and platform."""
+    df = load_orders_raw(engine)
+    if df.empty:
+        return pd.DataFrame(columns=["restaurant_id", "date", "platform", "total_sales", "orders_count"])
+    df = _normalize_columns(df)
+
+    # Identify columns
+    date_col = _find_first_column(df, ["date", "order_date", "created_at", "created", "time", "datetime"]) or "date"
+    rest_col = _find_first_column(df, ["restaurant_id", "rest_id", "store_id", "restaurant"]) or "restaurant_id"
+    platform_col = _find_first_column(df, ["platform", "source", "channel"]) or None
+    amount_col = _find_first_column(
+        df,
+        ["total_sales", "total", "amount", "revenue", "grand_total", "price", "order_amount", "subtotal"],
+    )
+    qty_col = _find_first_column(df, ["quantity", "qty", "count", "order_count"])  # optional
+    order_id_col = _find_first_column(df, ["order_id", "id", "order", "order_number"])  # for fake filter
+
+    # Filter fake orders
+    if fake_orders_df is not None and not fake_orders_df.empty and order_id_col:
+        fod = _normalize_columns(fake_orders_df)
+        if "order_id" in fod.columns:
+            try:
+                mask = ~df[order_id_col].astype(str).isin(fod["order_id"].astype(str))
+                df = df[mask].copy()
+            except Exception:
+                pass
+
+    if date_col not in df.columns:
+        return pd.DataFrame(columns=["restaurant_id", "date", "platform", "total_sales", "orders_count"])
+
+    out = df.copy()
+    out["date"] = pd.to_datetime(out[date_col], errors="coerce").dt.normalize()
+    out = out.dropna(subset=[rest_col, "date"]).copy()
+    out["restaurant_id"] = out[rest_col].astype(int)
+
+    if amount_col and amount_col in out.columns:
+        out["_amount"] = pd.to_numeric(out[amount_col], errors="coerce")
+    else:
+        price_col = _find_first_column(out, ["price", "unit_price", "avg_price"])
+        if price_col and qty_col and price_col in out.columns and qty_col in out.columns:
+            out["_amount"] = pd.to_numeric(out[price_col], errors="coerce") * pd.to_numeric(out[qty_col], errors="coerce")
+        else:
+            out["_amount"] = 0.0
+
+    if qty_col and qty_col in out.columns:
+        out["_qty"] = pd.to_numeric(out[qty_col], errors="coerce").fillna(0)
+    else:
+        out["_qty"] = 1
+
+    if platform_col and platform_col in out.columns:
+        out["platform"] = out[platform_col].astype(str)
+    else:
+        out["platform"] = None
+
+    daily = (
+        out.groupby(["restaurant_id", "date", "platform"], dropna=False, as_index=False)
+        .agg(total_sales=("_amount", "sum"), orders_count=("_qty", "sum"))
+        .sort_values(["restaurant_id", "date", "platform"])
+        .reset_index(drop=True)
+    )
+    # Normalize None platform to empty string for portability
+    daily["platform"] = daily["platform"].fillna("")
+    return daily
+
+
 def run_full_build(
     sqlite_path: Optional[str] = None,
     start_date: str = "2024-01-01",
@@ -534,6 +658,7 @@ def run_full_build(
     output_csv_path: str = "/workspace/data/merged_dataset.csv",
     excel_paths: Optional[List[str]] = None,
     fake_orders_sheet: Optional[str] = None,
+    write_postgres: bool = False,
 ) -> pd.DataFrame:
     """Run the full ETL to build merged dataset and save to CSV."""
     engine = get_engine(sqlite_path)
@@ -551,6 +676,34 @@ def run_full_build(
         excel_paths=excel_paths,
         fake_orders_df=fake_df,
     )
+
+    if write_postgres:
+        # Write to PostgreSQL
+        from etl.data_to_postgres import (
+            write_restaurants, write_sales, write_operations, write_marketing, write_weather, write_holidays
+        )
+        restaurants_df = load_restaurants(engine)
+        write_restaurants(restaurants_df)
+
+        sales_platform = load_orders_platform_daily(engine, fake_orders_df=fake_df)
+        write_sales(sales_platform)
+
+        ops_df = load_operations(engine)
+        write_operations(ops_df)
+
+        mkt_df = load_marketing(engine)
+        write_marketing(mkt_df)
+
+        # Weather: aggregate from cache for days needed
+        if not merged.empty:
+            weather_needed = merged[["restaurant_id", "date", "temp", "rain", "wind", "humidity"]].dropna(how="all", subset=["temp", "rain", "wind", "humidity"]).drop_duplicates()
+            write_weather(weather_needed)
+
+        # Holidays for period
+        from etl.holidays_loader import load_holidays_df as _load_holidays
+        holidays_df = _load_holidays(start_date, end_date)
+        write_holidays(holidays_df)
+
     return merged
 
 
@@ -577,6 +730,11 @@ def main() -> None:
         default=None,
         help="Google Sheet URL or ID containing fake orders to exclude (defaults to reading '/workspace/Fake orders')",
     )
+    parser.add_argument(
+        "--write-postgres",
+        action="store_true",
+        help="If set, writes normalized tables to PostgreSQL (requires DATABASE_URL or POSTGRES_* envs)",
+    )
 
     args = parser.parse_args()
 
@@ -588,6 +746,7 @@ def main() -> None:
             output_csv_path=args.out,
             excel_paths=args.excel,
             fake_orders_sheet=args.fake_orders_sheet,
+            write_postgres=args.write_postgres,
         )
         print(f"Built dataset with {len(merged)} rows -> {args.out}")
     else:

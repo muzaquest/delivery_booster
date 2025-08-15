@@ -63,6 +63,20 @@ python etl/data_loader.py --run \
   --excel /workspace/1.-Data-Kunjungan-2025-3.xls /workspace/Table-1-7-Final-1-1.xls
 ```
 
+Write normalized tables to PostgreSQL (sales by platform, operations, marketing, weather, holidays):
+
+```bash
+export POSTGRES_HOST=localhost
+export POSTGRES_PORT=5432
+export POSTGRES_DB=analytics
+export POSTGRES_USER=postgres
+export POSTGRES_PASSWORD=postgres
+
+python etl/data_loader.py --run --write-postgres \
+  --start 2024-01-01 --end 2025-12-31 \
+  --out /workspace/data/merged_dataset.csv
+```
+
 Optional:
 
 ```bash
