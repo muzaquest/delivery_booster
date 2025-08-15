@@ -6,6 +6,7 @@ import numpy as np
 
 from ml.inference import predict_with_shap, top_factors
 from ml.report_generator import build_text_report
+from app.report_basic import build_basic_report
 
 app = FastAPI(title="Restaurant Sales Analytics API", version="0.1.0")
 
@@ -14,6 +15,14 @@ app = FastAPI(title="Restaurant Sales Analytics API", version="0.1.0")
 async def health() -> dict:
     """Healthcheck endpoint returning service status."""
     return {"status": "ok"}
+
+
+@app.get("/report-basic")
+async def report_basic(period: str = Query(..., description="YYYY-MM-DD_YYYY-MM-DD"), restaurant_id: Optional[int] = None) -> dict:
+    try:
+        return build_basic_report(period, restaurant_id)
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @app.get("/report")
