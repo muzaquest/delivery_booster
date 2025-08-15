@@ -7,6 +7,7 @@ import numpy as np
 import calendar
 
 from etl.data_loader import get_engine
+from etl.feature_engineering import parse_tourist_flow
 
 
 def _read_stats(table: str, restaurant_id: Optional[int], start: date, end: date) -> pd.DataFrame:
@@ -155,6 +156,133 @@ def _workday_stats(df_all: pd.DataFrame) -> Dict[str, float]:
     return {"avg_workdays": float(mean), "spread_pct": float(spread), "cv_pct": float(cv), "avg_all_days": float(avg_all)}
 
 
+def _build_marketing_section(restaurant_id: Optional[int], start: date, end: date) -> Dict:
+    eng = get_engine()
+    # GRAB stats (funnel available)
+    qg = (
+        "SELECT stat_date, impressions, unique_impressions_reach, unique_menu_visits, "
+        "unique_add_to_carts, unique_conversion_reach, ads_orders, ads_spend, ads_sales "
+        "FROM grab_stats WHERE stat_date BETWEEN ? AND ?"
+        + (" AND restaurant_id=?" if restaurant_id is not None else "")
+    )
+    params = [str(start), str(end)] + ([restaurant_id] if restaurant_id is not None else [])
+    grab = pd.read_sql_query(qg, eng, params=params, parse_dates=["stat_date"]) if eng else pd.DataFrame()
+    grab.columns = [c.lower() for c in grab.columns]
+    funnel = {}
+    if not grab.empty:
+        impr = int(pd.to_numeric(grab.get("impressions"), errors="coerce").fillna(0).sum())
+        reach = int(pd.to_numeric(grab.get("unique_impressions_reach"), errors="coerce").fillna(0).sum())
+        menu = int(pd.to_numeric(grab.get("unique_menu_visits"), errors="coerce").fillna(0).sum())
+        cart = int(pd.to_numeric(grab.get("unique_add_to_carts"), errors="coerce").fillna(0).sum())
+        # Orders from ads: prefer ads_orders; fallback to unique_conversion_reach
+        ads_orders = int(pd.to_numeric(grab.get("ads_orders"), errors="coerce").fillna(0).sum())
+        if ads_orders == 0 and "unique_conversion_reach" in grab.columns:
+            ads_orders = int(pd.to_numeric(grab.get("unique_conversion_reach"), errors="coerce").fillna(0).sum())
+        spend = float(pd.to_numeric(grab.get("ads_spend"), errors="coerce").fillna(0).sum())
+        ads_sales = float(pd.to_numeric(grab.get("ads_sales"), errors="coerce").fillna(0).sum())
+
+        ctr = (menu / impr) if impr else None
+        conv_click_to_order = (ads_orders / menu) if menu else None
+        conv_cart_to_order = (ads_orders / cart) if cart else None
+        show_to_order = (ads_orders / impr) if impr else None
+        bounce_rate = (1 - (cart / menu)) if menu else None
+        abandoned_carts = (1 - (ads_orders / cart)) if cart else None
+
+        avg_ads_order_value = (ads_sales / ads_orders) if ads_orders else None
+        # Potential uplift estimates
+        uplift = {}
+        if avg_ads_order_value is not None:
+            # Reduce bounce by 10% of bouncers
+            bouncers = max(menu - cart, 0)
+            extra_clicks = 0.1 * bouncers
+            extra_orders_from_bounce = extra_clicks * (conv_cart_to_order or 0.0)
+            uplift_bounce = extra_orders_from_bounce * avg_ads_order_value
+            # Eliminate abandoned carts
+            missed_orders = max(cart - ads_orders, 0)
+            uplift_abandoned = missed_orders * avg_ads_order_value
+            uplift = {
+                "reduce_bounce_10_pct_revenue": float(uplift_bounce),
+                "eliminate_abandoned_revenue": float(uplift_abandoned),
+                "total_uplift": float(uplift_bounce + uplift_abandoned),
+            }
+
+        funnel = {
+            "impressions": impr,
+            "unique_reach": reach,
+            "menu_visits": menu,
+            "add_to_cart": cart,
+            "ads_orders": ads_orders,
+            "ctr": float(ctr) if ctr is not None else None,
+            "conv_click_to_order": float(conv_click_to_order) if conv_click_to_order is not None else None,
+            "conv_cart_to_order": float(conv_cart_to_order) if conv_cart_to_order is not None else None,
+            "show_to_order": float(show_to_order) if show_to_order is not None else None,
+            "bounce_rate": float(bounce_rate) if bounce_rate is not None else None,
+            "abandoned_carts_rate": float(abandoned_carts) if abandoned_carts is not None else None,
+            "ads_spend": float(spend),
+            "ads_sales": float(ads_sales),
+            "avg_ads_order_value": float(avg_ads_order_value) if avg_ads_order_value is not None else None,
+            "uplift_estimations": uplift,
+            "cpc": float(spend / impr) if impr else None,
+            "cpa": float(spend / ads_orders) if ads_orders else None,
+        }
+
+    # ROAS by month per platform
+    def roas_month(table: str) -> Dict[str, float]:
+        q = (
+            "SELECT strftime('%Y-%m', stat_date) ym, SUM(ads_sales) s, SUM(ads_spend) b "
+            f"FROM {table} WHERE stat_date BETWEEN ? AND ?"
+            + (" AND restaurant_id=?" if restaurant_id is not None else "")
+            + " GROUP BY ym"
+        )
+        df = pd.read_sql_query(q, eng, params=params, parse_dates=["ym"]) if eng else pd.DataFrame()
+        res = {}
+        if not df.empty:
+            for _, row in df.iterrows():
+                b = float(row["b"]) if row["b"] else 0.0
+                s = float(row["s"]) if row["s"] else 0.0
+                res[str(row["ym"])[:7]] = (s / b) if b else None
+        return res
+
+    roas = {"grab": roas_month("grab_stats"), "gojek": roas_month("gojek_stats")}
+
+    # Seasonal context: tourist flow (use last full year available in Excel)
+    seasonal = {}
+    try:
+        tf = parse_tourist_flow([
+            "/workspace/1.-Data-Kunjungan-2025-3.xls",
+            "/workspace/Table-1-7-Final-1-1.xls",
+        ])
+        if not tf.empty:
+            tf["date"] = pd.to_datetime(tf["date"]).dt.normalize()
+            tf2024 = tf[(tf["date"] >= "2024-01-01") & (tf["date"] < "2025-01-01")].copy()
+            if not tf2024.empty:
+                tf2024["ym"] = tf2024["date"].dt.to_period("M")
+                monthly = tf2024.groupby("ym")["tourist_flow"].sum()
+                if not monthly.empty:
+                    seasonal = {
+                        "2024-04": float(monthly.get(pd.Period("2024-04"), 0.0)),
+                        "2024-05": float(monthly.get(pd.Period("2024-05"), 0.0)),
+                        "peak_month": str(monthly.idxmax()),
+                        "peak_value": float(monthly.max()),
+                        "low_month": str(monthly.idxmin()),
+                        "low_value": float(monthly.min()),
+                    }
+    except Exception:
+        seasonal = {}
+
+    return {
+        "funnel_grab": funnel,
+        "roas_by_month": roas,
+        "seasonal_context": seasonal,
+    }
+
+def build_marketing_report(period: str, restaurant_id: Optional[int]) -> Dict:
+    start_str, end_str = period.split("_")
+    start = pd.to_datetime(start_str).date()
+    end = pd.to_datetime(end_str).date()
+    return _build_marketing_section(restaurant_id, start, end)
+
+
 def build_basic_report(period: str, restaurant_id: Optional[int]) -> Dict:
     start_str, end_str = period.split("_")
     start = pd.to_datetime(start_str).date()
@@ -219,5 +347,6 @@ def build_basic_report(period: str, restaurant_id: Optional[int]) -> Dict:
             "spread_workdays_pct": wd_stats.get("spread_pct", 0.0),
             "cv_workdays_pct": wd_stats.get("cv_pct", 0.0),
         },
+        "marketing": _build_marketing_section(restaurant_id, start, end),
     }
     return result
