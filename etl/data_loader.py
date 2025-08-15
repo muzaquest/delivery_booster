@@ -508,23 +508,138 @@ def get_weather_for_restaurant(restaurant_id: int, date: dt.date, engine: Option
     return daily
 
 
+def _select_daily_range_from_open_meteo(
+    latitude: float,
+    longitude: float,
+    start_date: dt.date,
+    end_date: dt.date,
+) -> pd.DataFrame:
+    """Query Open-Meteo daily variables for a date range and return a DataFrame."""
+    start = start_date.strftime("%Y-%m-%d")
+    end = end_date.strftime("%Y-%m-%d")
+
+    # Use archive endpoint for historical range (ERA5)
+    params = {
+        "latitude": latitude,
+        "longitude": longitude,
+        "start_date": start,
+        "end_date": end,
+        "daily": "temperature_2m_mean,precipitation_sum,windspeed_10m_max,relative_humidity_2m_mean",
+        "timezone": "auto",
+    }
+    resp = requests.get(OPEN_METEO_ARCHIVE_URL, params=params, timeout=60)
+    resp.raise_for_status()
+    data = resp.json() or {}
+    daily = data.get("daily") or {}
+
+    times = daily.get("time") or []
+    if not times:
+        return pd.DataFrame(columns=["date", "temp", "rain", "wind", "humidity"])
+
+    temp_key = "temperature_2m_mean" if "temperature_2m_mean" in daily else "temperature_2m_max"
+    temp_vals = daily.get(temp_key) or [None] * len(times)
+    rain_vals = daily.get("precipitation_sum") or [None] * len(times)
+    wind_vals = daily.get("windspeed_10m_max") or [None] * len(times)
+    hum_vals = daily.get("relative_humidity_2m_mean") or [None] * len(times)
+
+    df = pd.DataFrame({
+        "date": pd.to_datetime(times),
+        "temp": temp_vals,
+        "rain": rain_vals,
+        "wind": wind_vals,
+        "humidity": hum_vals,
+    })
+    return df
+
+
 def get_weather_series_for_restaurant(
     restaurant_id: int, start_date: dt.date, end_date: dt.date, engine: Engine
 ) -> pd.DataFrame:
-    """Return daily weather series for the specified date range using cache+API."""
-    dates = pd.date_range(start=start_date, end=end_date, freq="D").date
-    records: List[Dict[str, Any]] = []
-    for d in dates:
-        vals = get_weather_for_restaurant(restaurant_id, d, engine)
-        records.append({
-            "restaurant_id": restaurant_id,
-            "date": pd.to_datetime(d),
-            "temp": vals.get("temp"),
-            "rain": vals.get("rain"),
-            "wind": vals.get("wind"),
-            "humidity": vals.get("humidity"),
-        })
-    return pd.DataFrame.from_records(records)
+    """Return daily weather series for the specified date range using cache+API.
+
+    This optimized version fetches the entire range in a single Open-Meteo request
+    when cache misses are detected, then persists results into SQLite cache.
+    """
+    # Ensure cache table exists
+    weather_cache = ensure_weather_cache_table(engine)
+
+    # Fetch restaurant coordinates
+    inspector = inspect(engine)
+    restaurants_table = _resolve_table_name(engine, "restaurants", aliases=["restaurant", "stores"]) or "restaurants"
+    with engine.begin() as conn:
+        if restaurants_table in inspector.get_table_names():
+            df_rest = pd.read_sql_query(f"SELECT * FROM {restaurants_table} WHERE id = :rid", conn, params={"rid": restaurant_id})
+        else:
+            df_rest = pd.DataFrame()
+    if df_rest.empty:
+        return pd.DataFrame(columns=["restaurant_id", "date", "temp", "rain", "wind", "humidity"])
+
+    rest_norm = _normalize_columns(df_rest)
+    lat_col = _find_first_column(rest_norm, ["latitude", "lat"]) or "latitude"
+    lon_col = _find_first_column(rest_norm, ["longitude", "lon", "lng"]) or "longitude"
+    latitude = float(rest_norm.iloc[0][lat_col])
+    longitude = float(rest_norm.iloc[0][lon_col])
+
+    # Read what we already have in cache for the range
+    with engine.begin() as conn:
+        cached_df = pd.read_sql_query(
+            """
+            SELECT restaurant_id, date, temp, rain, wind, humidity
+            FROM weather_cache
+            WHERE restaurant_id = :rid AND date BETWEEN :start AND :end
+            ORDER BY date
+            """,
+            conn,
+            params={"rid": restaurant_id, "start": start_date, "end": end_date},
+            parse_dates=["date"],
+        )
+
+    # Determine missing dates
+    all_dates = pd.date_range(start=start_date, end=end_date, freq="D").normalize()
+    if not cached_df.empty:
+        cached_dates = pd.to_datetime(cached_df["date"]).dt.normalize().unique()
+    else:
+        cached_dates = np.array([], dtype="datetime64[ns]")
+    missing = all_dates.difference(pd.DatetimeIndex(cached_dates))
+
+    # If missing, fetch in a single range and upsert into cache
+    if len(missing) > 0:
+        fetched = _select_daily_range_from_open_meteo(latitude, longitude, start_date, end_date)
+        if not fetched.empty:
+            # Insert all fetched; ON CONFLICT ignore duplicates
+            with engine.begin() as conn:
+                for _, row in fetched.iterrows():
+                    conn.execute(
+                        weather_cache.insert().prefix_with("OR IGNORE").values(
+                            restaurant_id=restaurant_id,
+                            date=row["date"].date(),
+                            temp=row["temp"],
+                            rain=row["rain"],
+                            wind=row["wind"],
+                            humidity=row["humidity"],
+                            fetched_at=dt.datetime.utcnow().isoformat(timespec="seconds"),
+                        )
+                    )
+        # Reload cache after insert
+        with engine.begin() as conn:
+            cached_df = pd.read_sql_query(
+                """
+                SELECT restaurant_id, date, temp, rain, wind, humidity
+                FROM weather_cache
+                WHERE restaurant_id = :rid AND date BETWEEN :start AND :end
+                ORDER BY date
+                """,
+                conn,
+                params={"rid": restaurant_id, "start": start_date, "end": end_date},
+                parse_dates=["date"],
+            )
+
+    if cached_df.empty:
+        return pd.DataFrame(columns=["restaurant_id", "date", "temp", "rain", "wind", "humidity"])
+
+    cached_df["restaurant_id"] = restaurant_id
+    cached_df["date"] = pd.to_datetime(cached_df["date"]).dt.normalize()
+    return cached_df[["restaurant_id", "date", "temp", "rain", "wind", "humidity"]]
 
 
 def load_operations(engine: Engine) -> pd.DataFrame:
