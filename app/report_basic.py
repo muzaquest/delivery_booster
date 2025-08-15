@@ -4,6 +4,7 @@ from typing import Dict, Optional, Tuple
 from datetime import date
 import pandas as pd
 import numpy as np
+import calendar
 
 from etl.data_loader import get_engine
 
@@ -92,10 +93,13 @@ def _month_dynamics(df_all: pd.DataFrame, start: date, end: date) -> Dict[str, D
     res: Dict[str, Dict[str, float]] = {}
     for ym, group in tmp.groupby("ym"):
         month_str = str(ym)
-        # days in period within that month
+        # days in period within that month (inclusive)
         first = max(pd.Timestamp(str(ym) + "-01").date(), start)
-        last = min((pd.Timestamp(ym.end_time) - pd.Timedelta(days=1)).date(), end)
-        num_days = (pd.to_datetime(last) - pd.to_datetime(first)).days + 1
+        y, m = int(str(ym).split('-')[0]), int(str(ym).split('-')[1])
+        last_day = calendar.monthrange(y, m)[1]
+        last_month_date = pd.Timestamp(f"{y:04d}-{m:02d}-{last_day:02d}").date()
+        last = min(last_month_date, end)
+        num_days = max(0, (pd.to_datetime(last) - pd.to_datetime(first)).days + 1)
         total_sales = float(pd.to_numeric(group["sales"], errors="coerce").fillna(0).sum())
         avg_per_day = total_sales / num_days if num_days > 0 else 0.0
         res[month_str] = {"total_sales": total_sales, "days": int(num_days), "avg_per_day": avg_per_day}
@@ -177,7 +181,12 @@ def build_basic_report(period: str, restaurant_id: Optional[int]) -> Dict:
     # AOVs (require successful counts); will be computed by caller if necessary
 
     # Weekend vs Weekday
-    both_all = pd.concat([grab[["stat_date", "sales"]]] if not grab.empty else [] + [gojek[["stat_date", "sales"]]] if not gojek.empty else [], ignore_index=True) if (not grab.empty or not gojek.empty) else pd.DataFrame(columns=["stat_date","sales"])
+    parts = []
+    if not grab.empty:
+        parts.append(grab[["stat_date", "sales"]])
+    if not gojek.empty:
+        parts.append(gojek[["stat_date", "sales"]])
+    both_all = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=["stat_date","sales"])
     weekend_info = _weekend_weekday(both_all)
 
     # Best/Worst with platform breakdown
