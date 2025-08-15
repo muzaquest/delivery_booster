@@ -277,6 +277,134 @@ def _build_marketing_section(restaurant_id: Optional[int], start: date, end: dat
         "seasonal_context": seasonal,
     }
 
+def _sum_platform(eng, table: str, restaurant_id: Optional[int], start: date, end: date) -> Dict[str, float]:
+    base = f"SELECT SUM(sales) sales, SUM(payouts) payouts, SUM(ads_spend) ads_spend, SUM(ads_sales) ads_sales"
+    if table == "grab_stats":
+        base += ", SUM(ads_orders) ads_orders"
+    base += f" FROM {table} WHERE stat_date BETWEEN ? AND ?"
+    params = [str(start), str(end)]
+    if restaurant_id is not None:
+        base += " AND restaurant_id=?"
+        params.append(restaurant_id)
+    df = pd.read_sql_query(base, eng, params=tuple(params))
+    rec = df.iloc[0].to_dict() if not df.empty else {}
+    out = {k: float(rec.get(k) or 0.0) for k in ["sales", "payouts", "ads_spend", "ads_sales"]}
+    if table == "grab_stats":
+        out["ads_orders"] = float(rec.get("ads_orders") or 0.0)
+    return out
+
+
+def _monthly_platform(eng, table: str, restaurant_id: Optional[int], start: date, end: date) -> pd.DataFrame:
+    q = (
+        f"SELECT strftime('%Y-%m', stat_date) ym, SUM(payouts) payouts, SUM(ads_spend) ads_spend, SUM(ads_sales) ads_sales "
+        f"FROM {table} WHERE stat_date BETWEEN ? AND ?"
+        + (" AND restaurant_id=?" if restaurant_id is not None else "")
+        + " GROUP BY ym"
+    )
+    params = [str(start), str(end)] + ([restaurant_id] if restaurant_id is not None else [])
+    df = pd.read_sql_query(q, eng, params=tuple(params))
+    df["ym"] = df["ym"].astype(str)
+    return df
+
+
+def _build_financial_section(restaurant_id: Optional[int], start: date, end: date) -> Dict:
+    eng = get_engine()
+    grab = _sum_platform(eng, "grab_stats", restaurant_id, start, end)
+    gojek = _sum_platform(eng, "gojek_stats", restaurant_id, start, end)
+    totals = {k: grab.get(k, 0.0) + gojek.get(k, 0.0) for k in ["sales", "payouts", "ads_spend", "ads_sales"]}
+
+    # Take rate (effective commission share) per platform
+    def take_rate(p):
+        sales = p.get("sales", 0.0)
+        fees = p.get("sales", 0.0) - p.get("payouts", 0.0) - p.get("ads_spend", 0.0)
+        return (fees / sales) if sales else None, fees
+
+    grab_tr, grab_comm = take_rate(grab)
+    gojek_tr, gojek_comm = take_rate(gojek)
+    total_tr, total_comm = take_rate(totals)
+
+    # Net ROAS: attribute commission proportionally to ad sales
+    def net_roas(p, comm):
+        sales = p.get("sales", 0.0)
+        ads_sales = p.get("ads_sales", 0.0)
+        ads_spend = p.get("ads_spend", 0.0)
+        if ads_spend == 0:
+            return None
+        comm_ads = (comm * (ads_sales / sales)) if sales else 0.0
+        return ((ads_sales - comm_ads) / ads_spend) if ads_spend else None
+
+    grab_net_roas = net_roas(grab, grab_comm)
+    gojek_net_roas = net_roas(gojek, gojek_comm)
+
+    # Contribution per ad order (when ads_orders available)
+    grab_cpa = (grab["ads_spend"] / grab["ads_orders"]) if grab.get("ads_orders", 0.0) else None
+    grab_avg_ads_order = (grab["ads_sales"] / grab["ads_orders"]) if grab.get("ads_orders", 0.0) else None
+    grab_comm_rate = (grab_comm / grab["sales"]) if grab.get("sales", 0.0) else None
+    grab_contribution = None
+    if grab_avg_ads_order is not None and grab_comm_rate is not None and grab_cpa is not None:
+        grab_contribution = grab_avg_ads_order * (1.0 - grab_comm_rate) - grab_cpa
+
+    # Waterfall components per platform
+    def waterfall(p, comm):
+        return {
+            "sales": p.get("sales", 0.0),
+            "commission": comm,
+            "ads_spend": p.get("ads_spend", 0.0),
+            "payouts": p.get("payouts", 0.0),
+        }
+
+    waterfall_total = waterfall(totals, total_comm)
+    waterfall_grab = waterfall(grab, grab_comm)
+    waterfall_gojek = waterfall(gojek, gojek_comm)
+
+    # MoM comparisons for payouts and ROAS
+    mg = _monthly_platform(eng, "grab_stats", restaurant_id, start, end)
+    mj = _monthly_platform(eng, "gojek_stats", restaurant_id, start, end)
+    mom = {}
+    for ym in sorted(set(mg.get("ym", pd.Series()).tolist() + mj.get("ym", pd.Series()).tolist())):
+        mom[ym] = {
+            "payouts": float((mg.loc[mg["ym"] == ym, "payouts"].sum() + mj.loc[mj["ym"] == ym, "payouts"].sum())),
+            "roas_grab": float((mg.loc[mg["ym"] == ym, "ads_sales"].sum() / mg.loc[mg["ym"] == ym, "ads_spend"].sum())) if mg.loc[mg["ym"] == ym, "ads_spend"].sum() else None,
+            "roas_gojek": float((mj.loc[mj["ym"] == ym, "ads_sales"].sum() / mj.loc[mj["ym"] == ym, "ads_spend"].sum())) if mj.loc[mj["ym"] == ym, "ads_spend"].sum() else None,
+        }
+
+    return {
+        "payouts": {
+            "grab": grab.get("payouts", 0.0),
+            "gojek": gojek.get("payouts", 0.0),
+            "total": totals.get("payouts", 0.0),
+        },
+        "ad_sales": totals.get("ads_sales", 0.0),
+        "ad_sales_share": (totals.get("ads_sales", 0.0) / totals.get("sales", 0.0)) if totals.get("sales", 0.0) else None,
+        "roas": {
+            "grab": (grab.get("ads_sales", 0.0) / grab.get("ads_spend", 0.0)) if grab.get("ads_spend", 0.0) else None,
+            "gojek": (gojek.get("ads_sales", 0.0) / gojek.get("ads_spend", 0.0)) if gojek.get("ads_spend", 0.0) else None,
+        },
+        "take_rate": {
+            "grab": float(grab_tr) if grab_tr is not None else None,
+            "gojek": float(gojek_tr) if gojek_tr is not None else None,
+            "total": float(total_tr) if total_tr is not None else None,
+        },
+        "net_roas": {
+            "grab": float(grab_net_roas) if grab_net_roas is not None else None,
+            "gojek": float(gojek_net_roas) if gojek_net_roas is not None else None,
+        },
+        "contribution_per_ad_order_grab": float(grab_contribution) if grab_contribution is not None else None,
+        "waterfall": {
+            "total": waterfall_total,
+            "grab": waterfall_grab,
+            "gojek": waterfall_gojek,
+        },
+        "monthly": mom,
+        "explain": {
+            "take_rate": "Доля комиссий и удержаний: (выручка − выплаты − рекламный бюджет) ÷ выручка",
+            "net_roas": "Чистый ROAS: (рекламные продажи − доля комиссий, приходящаяся на рекламные продажи) ÷ рекламный бюджет",
+            "contribution": "Юнит‑экономика рекламы (GRAB): средний чек рекламного заказа × (1 − take rate) − CPA",
+            "waterfall": "Водопад денежных потоков: выручка → комиссии → рекламный бюджет → выплаты",
+        }
+    }
+
+
 def build_marketing_report(period: str, restaurant_id: Optional[int]) -> Dict:
     start_str, end_str = period.split("_")
     start = pd.to_datetime(start_str).date()
@@ -349,5 +477,6 @@ def build_basic_report(period: str, restaurant_id: Optional[int]) -> Dict:
             "cv_workdays_pct": wd_stats.get("cv_pct", 0.0),
         },
         "marketing": _build_marketing_section(restaurant_id, start, end),
+        "finance": _build_financial_section(restaurant_id, start, end),
     }
     return result
