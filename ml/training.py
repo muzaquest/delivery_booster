@@ -107,7 +107,7 @@ def train_model(csv_path: str = DEFAULT_DATASET, model_dir: str = DEFAULT_MODEL_
     joblib.dump(pipeline, os.path.join(model_dir, "model.joblib"))
     with open(os.path.join(model_dir, "features.json"), "w", encoding="utf-8") as f:
         json.dump(feat_cols, f)
-    background_sample.to_parquet(os.path.join(model_dir, "shap_background.parquet"))
+    background_sample.to_csv(os.path.join(model_dir, "shap_background.csv"), index=False)
     with open(os.path.join(model_dir, "metrics.json"), "w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=2)
 
