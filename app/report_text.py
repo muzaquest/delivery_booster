@@ -164,6 +164,257 @@ def _section4_marketing(mkt: Dict) -> str:
     return "\n".join(lines)
 
 
+def _section5_finance(fin: Dict) -> str:
+    lines = []
+    lines.append("5. 💳 ФИНАНСОВЫЕ ПОКАЗАТЕЛИ")
+    lines.append("—" * 72)
+    payouts = fin.get("payouts", {})
+    total_payouts = payouts.get("total") or 0.0
+    grab_p = payouts.get("grab") or 0.0
+    gojek_p = payouts.get("gojek") or 0.0
+    grab_pct = (grab_p / total_payouts * 100.0) if total_payouts else None
+    gojek_pct = (gojek_p / total_payouts * 100.0) if total_payouts else None
+    lines.append("💰 Выплаты:")
+    lines.append(f"   ├── 📱 GRAB: {_fmt_idr(grab_p)} ({_fmt_pct(grab_pct)})")
+    lines.append(f"   ├── 🛵 GOJEK: {_fmt_idr(gojek_p)} ({_fmt_pct(gojek_pct)})")
+    lines.append(f"   └── 💎 Общие выплаты: {_fmt_idr(total_payouts)}")
+
+    ad_sales = fin.get("ad_sales")
+    ad_share = (fin.get("ad_sales_share") or 0.0) * 100.0
+    lines.append("📊 Рекламная эффективность:")
+    lines.append(f"   ├── 💰 Общие рекламные продажи: {_fmt_idr(ad_sales)}")
+    lines.append(f"   ├── 📈 Доля от общих продаж: {_fmt_pct(ad_share)}")
+    lines.append(
+        f"   ├── 🎯 GRAB ROAS: {_fmt_rate(fin.get('roas',{}).get('grab'))}x"
+    )
+    lines.append(
+        f"   └── 🎯 GOJEK ROAS: {_fmt_rate(fin.get('roas',{}).get('gojek'))}x"
+    )
+
+    tr = fin.get("take_rate", {})
+    net_roas = fin.get("net_roas", {})
+    lines.append("")
+    lines.append("Дополнительно:")
+    lines.append(
+        f"   • Take rate (доля комиссий и удержаний): GRAB { _fmt_pct((tr.get('grab') or 0.0)*100) }, GOJEK { _fmt_pct((tr.get('gojek') or 0.0)*100) }"
+    )
+    lines.append(
+        f"   • Чистый ROAS: GRAB {_fmt_rate(net_roas.get('grab'))}x; GOJEK {_fmt_rate(net_roas.get('gojek'))}x"
+    )
+    contrib = fin.get("contribution_per_ad_order_grab")
+    if contrib is not None:
+        lines.append(
+            f"   • Юнит‑экономика рекламного заказа (GRAB): {_fmt_idr(contrib)}"
+        )
+    return "\n".join(lines)
+
+
+def _parse_time_to_minutes(val: str) -> Optional[float]:
+    if val is None:
+        return None
+    s = str(val)
+    parts = s.split(":")
+    try:
+        if len(parts) == 3:
+            h, m, sec = parts
+            return int(h) * 60 + int(m) + int(sec) / 60.0
+        if len(parts) == 2:
+            h, m = parts
+            return int(h) * 60 + int(m)
+        # fallback numeric
+        return float(s)
+    except Exception:
+        return None
+
+
+def _section6_operations(period: str, restaurant_id: int) -> str:
+    eng = get_engine()
+    start_str, end_str = period.split("_")
+    start = pd.to_datetime(start_str)
+    end = pd.to_datetime(end_str)
+
+    # GRAB driver_waiting_time JSON average (seconds -> minutes if needed)
+    qg = (
+        "SELECT driver_waiting_time FROM grab_stats WHERE restaurant_id=? AND stat_date BETWEEN ? AND ? "
+        "AND driver_waiting_time IS NOT NULL"
+    )
+    g = pd.read_sql_query(qg, eng, params=(restaurant_id, start_str, end_str))
+    grab_wait_vals = []
+    for v in g['driver_waiting_time'].dropna().tolist():
+        try:
+            if isinstance(v, str) and v.strip().startswith('{'):
+                d = pd.read_json(pd.io.common.StringIO(v), typ='series') if False else None
+                # Fallback manual parse
+                import json as _json
+                d = _json.loads(v)
+                for k in ('avg','average','minutes','mean'):
+                    if k in d:
+                        val = float(d[k])
+                        # heuristic: if seconds, convert to minutes
+                        grab_wait_vals.append(val/60.0 if val > 60 else val)
+                        break
+            elif isinstance(v, (int, float)):
+                val = float(v)
+                grab_wait_vals.append(val/60.0 if val > 60 else val)
+        except Exception:
+            pass
+    grab_wait_avg = sum(grab_wait_vals)/len(grab_wait_vals) if grab_wait_vals else None
+
+    # GOJEK times
+    qj = (
+        "SELECT accepting_time, preparation_time, delivery_time, driver_waiting, close_time, stat_date "
+        "FROM gojek_stats WHERE restaurant_id=? AND stat_date BETWEEN ? AND ?"
+    )
+    j = pd.read_sql_query(qj, eng, params=(restaurant_id, start_str, end_str))
+    acc = pd.Series([_parse_time_to_minutes(x) for x in j['accepting_time'] if pd.notna(x)])
+    prep = pd.Series([_parse_time_to_minutes(x) for x in j['preparation_time'] if pd.notna(x)])
+    delv = pd.Series([_parse_time_to_minutes(x) for x in j['delivery_time'] if pd.notna(x)])
+    drvw = pd.to_numeric(j['driver_waiting'], errors='coerce').dropna()
+
+    # cancellations
+    Cg = pd.read_sql_query(
+        "SELECT SUM(cancelled_orders) c FROM grab_stats WHERE restaurant_id=? AND stat_date BETWEEN ? AND ?",
+        eng, params=(restaurant_id, start_str, end_str)
+    ).iloc[0]['c'] or 0
+    Cj_row = pd.read_sql_query(
+        "SELECT SUM(cancelled_orders) c, SUM(lost_orders) l FROM gojek_stats WHERE restaurant_id=? AND stat_date BETWEEN ? AND ?",
+        eng, params=(restaurant_id, start_str, end_str)
+    ).iloc[0]
+    Cj = Cj_row['c'] or 0; Lj = Cj_row['l'] or 0
+    orders_total = (
+        (pd.read_sql_query("SELECT SUM(orders) o FROM grab_stats WHERE restaurant_id=? AND stat_date BETWEEN ? AND ?", eng, params=(restaurant_id, start_str, end_str)).iloc[0]['o'] or 0)
+        + (pd.read_sql_query("SELECT SUM(orders) o FROM gojek_stats WHERE restaurant_id=? AND stat_date BETWEEN ? AND ?", eng, params=(restaurant_id, start_str, end_str)).iloc[0]['o'] or 0)
+    )
+    cancel_rate = ((Cg + Cj) / orders_total * 100.0) if orders_total else None
+
+    # outages events > 1 hour
+    events = []
+    # GRAB offline_rate in minutes
+    og = pd.read_sql_query(
+        "SELECT stat_date, offline_rate FROM grab_stats WHERE restaurant_id=? AND stat_date BETWEEN ? AND ? AND offline_rate IS NOT NULL",
+        eng, params=(restaurant_id, start_str, end_str)
+    )
+    for _, row in og.iterrows():
+        mins = float(row['offline_rate'] or 0)
+        if mins >= 60.0:
+            events.append((pd.to_datetime(row['stat_date']).date(), 'GRAB', mins/60.0))
+    # GOJEK close_time HH:MM:SS
+    oj = pd.read_sql_query(
+        "SELECT stat_date, close_time FROM gojek_stats WHERE restaurant_id=? AND stat_date BETWEEN ? AND ?",
+        eng, params=(restaurant_id, start_str, end_str)
+    )
+    for _, row in oj.iterrows():
+        ct = str(row['close_time']) if pd.notna(row['close_time']) else ''
+        parts = ct.split(':')
+        seconds = None
+        try:
+            if len(parts) == 3:
+                h, m, s = parts
+                seconds = int(h)*3600 + int(m)*60 + int(s)
+        except Exception:
+            seconds = None
+        if seconds and seconds >= 3600:
+            events.append((pd.to_datetime(row['stat_date']).date(), 'GOJEK', seconds/3600.0))
+
+    # Potential losses
+    # average hourly revenue by platform
+    # platform sales
+    sg = pd.read_sql_query(
+        "SELECT SUM(sales) s FROM grab_stats WHERE restaurant_id=? AND stat_date BETWEEN ? AND ?",
+        eng, params=(restaurant_id, start_str, end_str)
+    ).iloc[0]['s'] or 0.0
+    sj = pd.read_sql_query(
+        "SELECT SUM(sales) s FROM gojek_stats WHERE restaurant_id=? AND stat_date BETWEEN ? AND ?",
+        eng, params=(restaurant_id, start_str, end_str)
+    ).iloc[0]['s'] or 0.0
+    num_days = (end - start).days + 1
+    hr_g = (sg / (num_days*24.0)) if num_days>0 else 0.0
+    hr_j = (sj / (num_days*24.0)) if num_days>0 else 0.0
+
+    total_loss_g = sum((hrs*hr_g) for (d,plat,hrs) in events if plat=='GRAB')
+    total_loss_j = sum((hrs*hr_j) for (d,plat,hrs) in events if plat=='GOJEK')
+
+    lines = []
+    lines.append("6. ⏰ ОПЕРАЦИОННЫЕ МЕТРИКИ")
+    lines.append("—" * 72)
+    lines.append("🟢 GRAB:")
+    lines.append(f"└── ⏰ Время ожидания водителей: {_fmt_rate(grab_wait_avg,1)} мин")
+    lines.append("")
+    lines.append("🟠 GOJEK:")
+    lines.append(f"├── ⏱️ Время приготовления: {_fmt_rate(prep.mean() if not prep.empty else None,1)} мин")
+    lines.append(f"├── 🚗 Время доставки: {_fmt_rate(delv.mean() if not delv.empty else None,1)} мин  ")
+    lines.append(f"└── ⏰ Время ожидания водителей: {_fmt_rate(drvw.mean() if not drvw.empty else None,1)} мин")
+    lines.append("")
+    lines.append("⚠️ ОПЕРАЦИОННАЯ ЭФФЕКТИВНОСТЬ")
+    lines.append("—" * 72)
+    lines.append("🚫 Отмененные заказы:")
+    lines.append(f"   ├── 📱 GRAB: {int(Cg)} заказа")
+    lines.append(f"   └── 🛵 GOJEK: {int(Cj)} заказа")
+    lines.append(f"   💡 Всего отмененных: {int(Cg+Cj)} заказов ({_fmt_pct(cancel_rate)})")
+    lines.append("")
+    if events:
+        total_loss = total_loss_g + total_loss_j
+        total_sales = sg + sj
+        loss_pct = (total_loss/total_sales*100.0) if total_sales else None
+        lines.append("🔧 ОПЕРАЦИОННЫЕ СБОИ ПЛАТФОРМ:")
+        # aggregate durations per platform
+        dur_g = sum(hrs for (_,plat,hrs) in events if plat=='GRAB')
+        dur_j = sum(hrs for (_,plat,hrs) in events if plat=='GOJEK')
+        from datetime import timedelta
+        def hms_from_hours(h):
+            h_int = int(h)
+            m = int((h - h_int)*60)
+            s = int(round(((h - h_int)*60 - m)*60))
+            return f"{h_int}:{m:02d}:{s:02d}"
+        lines.append(f"├── 📱 GRAB: {len([1 for _,p,_ in events if p=='GRAB'])} критичных дня ({hms_from_hours(dur_g)} общее время)")
+        lines.append(f"├── 🛵 GOJEK: {len([1 for _,p,_ in events if p=='GOJEK'])} критичных дня ({hms_from_hours(dur_j)} общее время)")
+        lines.append(f"└── 💸 Потенциальные потери: {_fmt_idr(total_loss)} ({_fmt_pct(loss_pct)})")
+        if events:
+            lines.append("")
+            lines.append("🚨 КРИТИЧЕСКИЕ СБОИ (>1 часа):")
+            # sort by date
+            for d, plat, hrs in sorted(events, key=lambda x: x[0]):
+                loss = hrs*(hr_g if plat=='GRAB' else hr_j)
+                lines.append(f"   • {d}: {plat} offline {hms_from_hours(hrs)} (потери: ~{_fmt_idr(loss)})")
+    return "\n".join(lines)
+
+
+def _section3_clients(period: str, restaurant_id: int) -> str:
+    eng = get_engine()
+    start_str, end_str = period.split("_")
+    qg = (
+        "SELECT SUM(new_customers) new, SUM(repeated_customers) rep, SUM(reactivated_customers) rea, SUM(total_customers) tot, "
+        "SUM(earned_new_customers) enew, SUM(earned_repeated_customers) erep, SUM(earned_reactivated_customers) erea "
+        "FROM grab_stats WHERE restaurant_id=? AND stat_date BETWEEN ? AND ?"
+    )
+    qj = (
+        "SELECT SUM(new_client) new, SUM(active_client) act, SUM(returned_client) ret "
+        "FROM gojek_stats WHERE restaurant_id=? AND stat_date BETWEEN ? AND ?"
+    )
+    g = pd.read_sql_query(qg, eng, params=(restaurant_id, start_str, end_str)).iloc[0].fillna(0)
+    j = pd.read_sql_query(qj, eng, params=(restaurant_id, start_str, end_str)).iloc[0].fillna(0)
+    grab_new, grab_rep, grab_rea, grab_tot = int(g['new']), int(g['rep']), int(g['rea']), int(g['tot'])
+    gojek_new, gojek_act, gojek_ret = int(j['new']), int(j['act']), int(j['ret'])
+    total_unique = grab_tot + gojek_new + gojek_act + gojek_ret  # верхняя оценка
+
+    lines = []
+    lines.append("👥 3. ДЕТАЛЬНЫЙ АНАЛИЗ КЛИЕНТСКОЙ БАЗЫ")
+    lines.append("—" * 72)
+    lines.append("📊 Структура клиентской базы (GRAB + GOJEK):")
+    lines.append(f"  🆕 Новые клиенты: {grab_new + gojek_new}")
+    lines.append(f"    📱 GRAB: {grab_new} | 🛵 GOJEK: {gojek_new}")
+    lines.append(f"  🔄 Повторные клиенты: {grab_rep + gojek_act}")
+    lines.append(f"    📱 GRAB: {grab_rep} | 🛵 GOJEK: {gojek_act}")
+    lines.append(f"  📲 Реактивированные: {grab_rea + gojek_ret}")
+    lines.append(f"    📱 GRAB: {grab_rea} | 🛵 GOJEK: {gojek_ret}")
+    lines.append("")
+    lines.append("💰 Доходность по типам клиентов (только GRAB, только с рекламы):")
+    lines.append(f"  🆕 Новые: {_fmt_idr(g['enew'])}")
+    lines.append(f"  🔄 Повторные: {_fmt_idr(g['erep'])}")
+    lines.append(f"  📲 Реактивированные: {_fmt_idr(g['erea'])}")
+    return "\n".join(lines)
+
+
 def _section7_quality(quality: Dict) -> str:
     r = quality.get("ratings", {})
     lines = []
@@ -190,6 +441,7 @@ def generate_full_report(period: str, restaurant_id: int) -> str:
     basic = build_basic_report(period, restaurant_id)
     marketing = build_marketing_report(period, restaurant_id)
     quality = build_quality_report(period, restaurant_id)
+    finance = basic.get("finance") if isinstance(basic, dict) else None
 
     parts = []
     # Section 1
@@ -198,8 +450,18 @@ def generate_full_report(period: str, restaurant_id: int) -> str:
     # Section 2
     parts.append(_section2_trends(basic))
     parts.append("")
+    # Section 3
+    parts.append(_section3_clients(period, restaurant_id))
+    parts.append("")
     # Section 4
     parts.append(_section4_marketing(marketing))
+    parts.append("")
+    # Section 5
+    if finance:
+        parts.append(_section5_finance(finance))
+        parts.append("")
+    # Section 6
+    parts.append(_section6_operations(period, restaurant_id))
     parts.append("")
     # Section 7
     parts.append(_section7_quality(quality))
