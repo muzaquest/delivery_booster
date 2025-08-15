@@ -11,3 +11,4 @@ python-dotenv
 pytest
 xlrd
 beautifulsoup4
+joblib
