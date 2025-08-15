@@ -165,7 +165,7 @@ def _build_marketing_section(restaurant_id: Optional[int], start: date, end: dat
         "FROM grab_stats WHERE stat_date BETWEEN ? AND ?"
         + (" AND restaurant_id=?" if restaurant_id is not None else "")
     )
-    params = [str(start), str(end)] + ([restaurant_id] if restaurant_id is not None else [])
+    params = tuple([str(start), str(end)] + ([restaurant_id] if restaurant_id is not None else []))
     grab = pd.read_sql_query(qg, eng, params=params, parse_dates=["stat_date"]) if eng else pd.DataFrame()
     grab.columns = [c.lower() for c in grab.columns]
     funnel = {}
@@ -234,6 +234,7 @@ def _build_marketing_section(restaurant_id: Optional[int], start: date, end: dat
             + (" AND restaurant_id=?" if restaurant_id is not None else "")
             + " GROUP BY ym"
         )
+        params = tuple([str(start), str(end)] + ([restaurant_id] if restaurant_id is not None else []))
         df = pd.read_sql_query(q, eng, params=params, parse_dates=["ym"]) if eng else pd.DataFrame()
         res = {}
         if not df.empty:
