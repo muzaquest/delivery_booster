@@ -17,6 +17,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 import pandas as pd
 import requests
 import re
+import math
 from sqlalchemy import (
     Column,
     Date,
@@ -29,6 +30,7 @@ from sqlalchemy import (
     create_engine,
     inspect,
     select,
+    Text,
 )
 from sqlalchemy.engine import Engine
 from sqlalchemy.sql import and_
@@ -81,6 +83,23 @@ def ensure_weather_cache_table(engine: Engine) -> Table:
     )
     metadata.create_all(engine, tables=[weather_cache])
     return weather_cache
+
+
+def ensure_geocode_cache_table(engine: Engine) -> Table:
+    metadata = MetaData()
+    geocode_cache = Table(
+        "geocode_cache",
+        metadata,
+        Column("id", Integer, primary_key=True, autoincrement=True),
+        Column("restaurant_id", Integer, nullable=False),
+        Column("name", Text, nullable=False),
+        Column("latitude", Float, nullable=False),
+        Column("longitude", Float, nullable=False),
+        Column("fetched_at", String(32)),
+        UniqueConstraint("restaurant_id", name="ux_geocode_restaurant"),
+    )
+    metadata.create_all(engine, tables=[geocode_cache])
+    return geocode_cache
 
 
 def _read_sql_table(engine: Engine, table_name: str) -> pd.DataFrame:
@@ -215,25 +234,39 @@ def load_fake_orders(sheet_url_or_id: Optional[str] = None) -> pd.DataFrame:
 
 
 def load_orders_raw(engine: Engine) -> pd.DataFrame:
-    table = _resolve_table_name(
+    # Try canonical orders table first; else use platform stats
+    inspector = inspect(engine)
+    orders_table = _resolve_table_name(
         engine, "orders", aliases=["order", "sales", "transactions", "fake_orders", "orders_table"]
     )
-    if not table:
-        return pd.DataFrame()
-    df = _read_sql_table(engine, table)
-    return df
+    if orders_table and orders_table in inspector.get_table_names():
+        return _read_sql_table(engine, orders_table)
+    # Fallback to platform stats as raw
+    return _load_platforms_combined(engine)
 
 
 def load_orders(engine: Engine, fake_orders_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
     """Load orders, exclude fake orders if provided, and aggregate to daily per restaurant.
 
-    Output columns: restaurant_id, date, total_sales, orders_count
+    Supports canonical orders table or platform stats (grab_stats/gojek_stats).
+    Output: restaurant_id, date, total_sales, orders_count
     """
     df = load_orders_raw(engine)
     if df.empty:
         return pd.DataFrame(columns=["restaurant_id", "date", "total_sales", "orders_count"])
     df = _normalize_columns(df)
 
+    if {"platform", "total_sales", "orders_count", "date", "restaurant_id"}.issubset(df.columns):
+        # Already platform-stats shaped
+        agg = (
+            df.dropna(subset=["date"]).assign(date=pd.to_datetime(df["date"], errors="coerce").dt.normalize())
+            .groupby(["restaurant_id", "date"], as_index=False)
+            .agg(total_sales=("total_sales", "sum"), orders_count=("orders_count", "sum"))
+            .sort_values(["restaurant_id", "date"]).reset_index(drop=True)
+        )
+        return agg
+
+    # else fallback to canonical reader (previous implementation)
     # Identify columns
     date_col = _find_first_column(df, ["date", "order_date", "created_at", "created", "time", "datetime"]) or "date"
     rest_col = _find_first_column(df, ["restaurant_id", "rest_id", "store_id", "restaurant"]) or "restaurant_id"
@@ -263,16 +296,14 @@ def load_orders(engine: Engine, fake_orders_df: Optional[pd.DataFrame] = None) -
             except Exception:
                 pass
 
-    # Normalize date and restaurant
     if date_col not in df.columns:
         return pd.DataFrame(columns=["restaurant_id", "date", "total_sales", "orders_count"])
 
     out = df.copy()
     out["date"] = pd.to_datetime(out[date_col], errors="coerce").dt.normalize()
-    out = out.dropna(subset=[rest_col, "date"])  # drop invalid
+    out = out.dropna(subset=[rest_col, "date"]).copy()
     out["restaurant_id"] = out[rest_col].astype(int)
 
-    # Build sales amount and order count
     if amount_col and amount_col in out.columns:
         out["_amount"] = pd.to_numeric(out[amount_col], errors="coerce")
     else:
@@ -292,8 +323,7 @@ def load_orders(engine: Engine, fake_orders_df: Optional[pd.DataFrame] = None) -
     daily = (
         out.groupby(["restaurant_id", "date"], as_index=False)
         .agg(total_sales=("_amount", "sum"), orders_count=("_qty", "sum"))
-        .sort_values(["restaurant_id", "date"])
-        .reset_index(drop=True)
+        .sort_values(["restaurant_id", "date"]).reset_index(drop=True)
     )
     return daily
 
@@ -452,6 +482,46 @@ def _select_daily_from_open_meteo(
     return {"temp": temp, "rain": rain, "wind": wind, "humidity": humidity}
 
 
+def get_restaurant_coordinates(restaurant_id: int, restaurant_name: str, engine: Engine) -> Optional[Tuple[float, float]]:
+    # 1) Try restaurants table for lat/lon if exists
+    inspector = inspect(engine)
+    if "restaurants" in inspector.get_table_names():
+        df_rest = pd.read_sql_query("SELECT * FROM restaurants WHERE id = :rid", engine, params={"rid": restaurant_id})
+        df_norm = _normalize_columns(df_rest)
+        for lat_col in ("latitude", "lat"):
+            if lat_col in df_norm.columns:
+                lon_col = _find_first_column(df_norm, ["longitude", "lon", "lng"]) or None
+                if lon_col and lon_col in df_norm.columns:
+                    try:
+                        return float(df_norm.iloc[0][lat_col]), float(df_norm.iloc[0][lon_col])
+                    except Exception:
+                        pass
+    # 2) Try geocode cache
+    geo_tbl = ensure_geocode_cache_table(engine)
+    with engine.begin() as conn:
+        row = conn.execute(select(geo_tbl.c.latitude, geo_tbl.c.longitude).where(geo_tbl.c.restaurant_id == restaurant_id)).fetchone()
+        if row:
+            return float(row.latitude), float(row.longitude)
+    # 3) Geocode via Google
+    api_key = _google_api_key()
+    if not api_key:
+        return None
+    coords = _google_geocode(restaurant_name, api_key)
+    if coords is None:
+        return None
+    with engine.begin() as conn:
+        conn.execute(
+            geo_tbl.insert().values(
+                restaurant_id=restaurant_id,
+                name=restaurant_name,
+                latitude=coords[0],
+                longitude=coords[1],
+                fetched_at=dt.datetime.utcnow().isoformat(timespec="seconds"),
+            )
+        )
+    return coords
+
+
 def get_weather_for_restaurant(restaurant_id: int, date: dt.date, engine: Optional[Engine] = None) -> Dict[str, Optional[float]]:
     """Get daily weather for a restaurant/date, using SQLite cache to avoid repeated API calls.
 
@@ -465,20 +535,32 @@ def get_weather_for_restaurant(restaurant_id: int, date: dt.date, engine: Option
     # Ensure cache table exists
     weather_cache = ensure_weather_cache_table(engine)
 
-    # Fetch restaurant coordinates
+    # Fetch restaurant coordinates (from restaurants table or geocode cache)
     with engine.begin() as conn:
         if restaurants_table in inspector.get_table_names():
             df_rest = pd.read_sql_query(f"SELECT * FROM {restaurants_table} WHERE id = :rid", conn, params={"rid": restaurant_id})
         else:
             df_rest = pd.DataFrame()
-    if df_rest.empty:
+    rest_name = None
+    if not df_rest.empty:
+        rest_norm = _normalize_columns(df_rest)
+        rest_name = rest_norm.iloc[0].get("name")
+    coords = None
+    if not df_rest.empty:
+        # try direct columns
+        rest_norm = _normalize_columns(df_rest)
+        lat_col = _find_first_column(rest_norm, ["latitude", "lat"]) or None
+        lon_col = _find_first_column(rest_norm, ["longitude", "lon", "lng"]) or None
+        if lat_col and lon_col and lat_col in rest_norm.columns and lon_col in rest_norm.columns:
+            try:
+                coords = (float(rest_norm.iloc[0][lat_col]), float(rest_norm.iloc[0][lon_col]))
+            except Exception:
+                coords = None
+    if coords is None:
+        coords = get_restaurant_coordinates(restaurant_id, rest_name or f"restaurant_{restaurant_id}", engine)
+    if coords is None:
         return {"temp": None, "rain": None, "wind": None, "humidity": None}
-
-    rest_norm = _normalize_columns(df_rest)
-    lat_col = _find_first_column(rest_norm, ["latitude", "lat"]) or "latitude"
-    lon_col = _find_first_column(rest_norm, ["longitude", "lon", "lng"]) or "longitude"
-    latitude = float(rest_norm.iloc[0][lat_col])
-    longitude = float(rest_norm.iloc[0][lon_col])
+    latitude, longitude = coords
 
     # Check cache first
     with engine.begin() as conn:
@@ -642,12 +724,117 @@ def get_weather_series_for_restaurant(
     return cached_df[["restaurant_id", "date", "temp", "rain", "wind", "humidity"]]
 
 
+def _time_to_minutes(val: Any) -> Optional[float]:
+    if val is None or (isinstance(val, float) and math.isnan(val)):
+        return None
+    try:
+        # If already number (seconds or minutes?)
+        if isinstance(val, (int, float)):
+            # assume minutes
+            return float(val)
+        s = str(val)
+        if not s or s.lower() in ("nan", "none"):
+            return None
+        parts = s.split(":")
+        if len(parts) == 3:
+            h, m, sec = parts
+            return int(h) * 60 + int(m) + int(sec) / 60.0
+        if len(parts) == 2:
+            h, m = parts
+            return int(h) * 60 + int(m)
+        # Fallback try parse float minutes
+        return float(s)
+    except Exception:
+        return None
+
+
+def _load_platform_stats(engine: Engine, table_name: str, platform: str) -> pd.DataFrame:
+    inspector = inspect(engine)
+    if table_name not in inspector.get_table_names():
+        return pd.DataFrame()
+    df = pd.read_sql_table(table_name, engine)
+    df = _normalize_columns(df)
+    date_col = _find_first_column(df, ["stat_date", "date"]) or "stat_date"
+    rest_col = _find_first_column(df, ["restaurant_id", "rest_id", "store_id"]) or "restaurant_id"
+    out = pd.DataFrame()
+    if platform == "grab":
+        out = pd.DataFrame({
+            "restaurant_id": pd.to_numeric(df[rest_col], errors="coerce").astype("Int64"),
+            "date": pd.to_datetime(df[date_col], errors="coerce").dt.normalize(),
+            "platform": platform,
+            "total_sales": pd.to_numeric(df.get("sales"), errors="coerce"),
+            "orders_count": pd.to_numeric(df.get("orders"), errors="coerce"),
+            "ads_spend": pd.to_numeric(df.get("ads_spend"), errors="coerce"),
+            "ads_sales": pd.to_numeric(df.get("ads_sales"), errors="coerce"),
+            "impressions": pd.to_numeric(df.get("impressions"), errors="coerce"),
+            "rating": pd.to_numeric(df.get("rating"), errors="coerce"),
+            "offline_rate": pd.to_numeric(df.get("offline_rate"), errors="coerce"),
+            # driver_waiting_time is JSON; attempt to parse avg minutes
+            "driver_waiting_time": df.get("driver_waiting_time")
+        })
+        # Parse driver waiting json → minutes if possible
+        def _parse_driver_wait(v):
+            try:
+                if isinstance(v, str) and v.strip().startswith("{"):
+                    d = json.loads(v)
+                    # try fields like avg, mean, minutes
+                    for k in ("avg", "average", "minutes", "mean"):
+                        if k in d:
+                            return float(d[k])
+                elif isinstance(v, (int, float)):
+                    return float(v)
+            except Exception:
+                return None
+            return None
+        out["driver_waiting_minutes"] = out["driver_waiting_time"].apply(_parse_driver_wait)
+    elif platform == "gojek":
+        out = pd.DataFrame({
+            "restaurant_id": pd.to_numeric(df[rest_col], errors="coerce").astype("Int64"),
+            "date": pd.to_datetime(df[date_col], errors="coerce").dt.normalize(),
+            "platform": platform,
+            "total_sales": pd.to_numeric(df.get("sales"), errors="coerce"),
+            "orders_count": pd.to_numeric(df.get("orders"), errors="coerce"),
+            "ads_spend": pd.to_numeric(df.get("ads_spend"), errors="coerce"),
+            "ads_sales": pd.to_numeric(df.get("ads_sales"), errors="coerce"),
+            "impressions": pd.NA,  # not available in gojek_stats
+            "rating": pd.to_numeric(df.get("rating"), errors="coerce"),
+            "accepting_time": df.get("accepting_time").apply(_time_to_minutes) if "accepting_time" in df.columns else None,
+            "preparation_time": df.get("preparation_time").apply(_time_to_minutes) if "preparation_time" in df.columns else None,
+            "delivery_time": df.get("delivery_time").apply(_time_to_minutes) if "delivery_time" in df.columns else None,
+            "close_time": pd.to_numeric(df.get("close_time"), errors="coerce"),
+        })
+    else:
+        return pd.DataFrame()
+
+    out = out.dropna(subset=["restaurant_id", "date"]).copy()
+    out["restaurant_id"] = out["restaurant_id"].astype(int)
+    # Compute ROAS where possible
+    if "ads_spend" in out.columns and "ads_sales" in out.columns:
+        with np.errstate(divide='ignore', invalid='ignore'):
+            out["roas"] = (out["ads_sales"] / out["ads_spend"]).replace([np.inf, -np.inf], np.nan)
+    return out
+
+
+def _load_platforms_combined(engine: Engine) -> pd.DataFrame:
+    grab = _load_platform_stats(engine, "grab_stats", "grab")
+    gojek = _load_platform_stats(engine, "gojek_stats", "gojek")
+    if grab.empty and gojek.empty:
+        return pd.DataFrame()
+    return pd.concat([d for d in [grab, gojek] if not d.empty], ignore_index=True)
+
+
 def load_operations(engine: Engine) -> pd.DataFrame:
+    # Prefer platform stats
+    platforms = _load_platforms_combined(engine)
+    if not platforms.empty:
+        cols = [c for c in [
+            "restaurant_id", "date", "platform", "accepting_time", "delivery_time", "preparation_time", "rating", "driver_waiting_minutes"
+        ] if c in platforms.columns]
+        return platforms[cols]
+    # Fallback to generic operations table
     table = _resolve_table_name(engine, "operations", aliases=["ops", "operation_metrics"])
     if not table:
-        return pd.DataFrame(columns=[
-            "restaurant_id", "date", "platform", "accepting_time", "delivery_time", "preparation_time", "rating", "repeat_customers"
-        ])
+        return pd.DataFrame(columns=["restaurant_id", "date", "platform", "accepting_time", "delivery_time", "preparation_time", "rating", "repeat_customers"])
     df = _read_sql_table(engine, table)
     df = _normalize_columns(df)
     date_col = _find_first_column(df, ["date", "day", "recorded_at"]) or "date"
@@ -670,11 +857,14 @@ def load_operations(engine: Engine) -> pd.DataFrame:
 
 
 def load_marketing(engine: Engine) -> pd.DataFrame:
+    # Prefer platform stats
+    platforms = _load_platforms_combined(engine)
+    if not platforms.empty:
+        return platforms[["restaurant_id", "date", "platform", "ads_spend", "roas", "impressions"]]
+    # Fallback to generic marketing table
     table = _resolve_table_name(engine, "marketing", aliases=["ads", "adspend", "campaigns"])
     if not table:
-        return pd.DataFrame(columns=[
-            "restaurant_id", "date", "platform", "ads_spend", "roas", "impressions", "clicks"
-        ])
+        return pd.DataFrame(columns=["restaurant_id", "date", "platform", "ads_spend", "roas", "impressions", "clicks"])
     df = _read_sql_table(engine, table)
     df = _normalize_columns(df)
     date_col = _find_first_column(df, ["date", "day", "recorded_at"]) or "date"
@@ -700,13 +890,16 @@ def load_marketing(engine: Engine) -> pd.DataFrame:
 
 
 def load_platform_outages(engine: Engine) -> pd.DataFrame:
-    """Load platform outages/downtime if present.
-
-    Flexible schema: looks for table names like platform_outages/outages/downtime and columns:
-    - restaurant_id, date, platform
-    - offline_minutes or close_time (minutes)
-    - offline_rate (0..1) optional
-    """
+    # Prefer platform stats
+    platforms = _load_platforms_combined(engine)
+    if not platforms.empty:
+        cols = [c for c in ["restaurant_id", "date", "platform", "offline_rate", "close_time"] if c in platforms.columns]
+        res = platforms[cols].copy()
+        # offline_minutes derive from close_time if present
+        if "close_time" in res.columns:
+            res["offline_minutes"] = pd.to_numeric(res["close_time"], errors="coerce")
+        return res
+    # Fallback to generic outages loader
     table = _resolve_table_name(engine, "platform_outages", aliases=["outages", "downtime", "platform_downtime"])
     if not table:
         return pd.DataFrame(columns=["restaurant_id", "date", "platform", "offline_minutes", "offline_rate", "close_time"])
@@ -716,7 +909,7 @@ def load_platform_outages(engine: Engine) -> pd.DataFrame:
     rest_col = _find_first_column(df, ["restaurant_id", "rest_id", "store_id"]) or "restaurant_id"
     platform_col = _find_first_column(df, ["platform", "source", "channel"]) or "platform"
     minutes_col = _find_first_column(df, ["offline_minutes", "downtime_minutes", "close_time", "minutes"])
-    rate_col = _find_first_column(df, ["offline_rate", "downtime_rate"])
+    rate_col = _find_first_column(df, ["offline_rate", "downtime_rate"]) 
 
     out = pd.DataFrame({
         "restaurant_id": pd.to_numeric(df[rest_col], errors="coerce").astype("Int64"),
@@ -725,7 +918,6 @@ def load_platform_outages(engine: Engine) -> pd.DataFrame:
         "offline_minutes": pd.to_numeric(df.get(minutes_col), errors="coerce") if minutes_col else None,
         "offline_rate": pd.to_numeric(df.get(rate_col), errors="coerce") if rate_col else None,
     })
-    # Derive close_time == offline_minutes
     if "offline_minutes" in out.columns and not isinstance(out["offline_minutes"], type(None)):
         out["close_time"] = out["offline_minutes"]
     else:
