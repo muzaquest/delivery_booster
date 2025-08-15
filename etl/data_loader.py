@@ -646,27 +646,24 @@ def load_operations(engine: Engine) -> pd.DataFrame:
     table = _resolve_table_name(engine, "operations", aliases=["ops", "operation_metrics"])
     if not table:
         return pd.DataFrame(columns=[
-            "restaurant_id", "date", "accepting_time", "delivery_time", "preparation_time", "rating", "repeat_customers"
+            "restaurant_id", "date", "platform", "accepting_time", "delivery_time", "preparation_time", "rating", "repeat_customers"
         ])
     df = _read_sql_table(engine, table)
     df = _normalize_columns(df)
     date_col = _find_first_column(df, ["date", "day", "recorded_at"]) or "date"
     rest_col = _find_first_column(df, ["restaurant_id", "rest_id", "store_id"]) or "restaurant_id"
-    out = pd.DataFrame()
-    try:
-        out = pd.DataFrame({
-            "restaurant_id": pd.to_numeric(df[rest_col], errors="coerce").astype("Int64"),
-            "date": pd.to_datetime(df[date_col], errors="coerce").dt.normalize(),
-            "accepting_time": pd.to_numeric(df.get("accepting_time"), errors="coerce"),
-            "delivery_time": pd.to_numeric(df.get("delivery_time"), errors="coerce"),
-            "preparation_time": pd.to_numeric(df.get("preparation_time"), errors="coerce"),
-            "rating": pd.to_numeric(df.get("rating"), errors="coerce"),
-            "repeat_customers": pd.to_numeric(df.get("repeat_customers"), errors="coerce"),
-        })
-    except Exception:
-        return pd.DataFrame(columns=[
-            "restaurant_id", "date", "accepting_time", "delivery_time", "preparation_time", "rating", "repeat_customers"
-        ])
+    platform_col = _find_first_column(df, ["platform", "source", "channel"])  # optional
+
+    out = pd.DataFrame({
+        "restaurant_id": pd.to_numeric(df[rest_col], errors="coerce").astype("Int64"),
+        "date": pd.to_datetime(df[date_col], errors="coerce").dt.normalize(),
+        "accepting_time": pd.to_numeric(df.get("accepting_time"), errors="coerce"),
+        "delivery_time": pd.to_numeric(df.get("delivery_time"), errors="coerce"),
+        "preparation_time": pd.to_numeric(df.get("preparation_time"), errors="coerce"),
+        "rating": pd.to_numeric(df.get("rating"), errors="coerce"),
+        "repeat_customers": pd.to_numeric(df.get("repeat_customers"), errors="coerce"),
+        "platform": (df[platform_col].astype(str) if platform_col and platform_col in df.columns else pd.Series([None]*len(df))),
+    })
     out = out.dropna(subset=["restaurant_id", "date"]).copy()
     out["restaurant_id"] = out["restaurant_id"].astype(int)
     return out
@@ -676,12 +673,13 @@ def load_marketing(engine: Engine) -> pd.DataFrame:
     table = _resolve_table_name(engine, "marketing", aliases=["ads", "adspend", "campaigns"])
     if not table:
         return pd.DataFrame(columns=[
-            "restaurant_id", "date", "ads_spend", "roas", "impressions", "clicks"
+            "restaurant_id", "date", "platform", "ads_spend", "roas", "impressions", "clicks"
         ])
     df = _read_sql_table(engine, table)
     df = _normalize_columns(df)
     date_col = _find_first_column(df, ["date", "day", "recorded_at"]) or "date"
     rest_col = _find_first_column(df, ["restaurant_id", "rest_id", "store_id"]) or "restaurant_id"
+    platform_col = _find_first_column(df, ["platform", "source", "channel"])  # optional
     spend_col = _find_first_column(df, ["ads_spend", "ad_spend", "spend", "budget"]) or "ads_spend"
     roas_col = _find_first_column(df, ["roas"]) or "roas"
     impr_col = _find_first_column(df, ["impressions", "impr"]) or "impressions"
@@ -694,7 +692,44 @@ def load_marketing(engine: Engine) -> pd.DataFrame:
         "roas": pd.to_numeric(df.get(roas_col), errors="coerce"),
         "impressions": pd.to_numeric(df.get(impr_col), errors="coerce"),
         "clicks": pd.to_numeric(df.get(clicks_col), errors="coerce"),
+        "platform": (df[platform_col].astype(str) if platform_col and platform_col in df.columns else pd.Series([None]*len(df))),
     })
+    out = out.dropna(subset=["restaurant_id", "date"]).copy()
+    out["restaurant_id"] = out["restaurant_id"].astype(int)
+    return out
+
+
+def load_platform_outages(engine: Engine) -> pd.DataFrame:
+    """Load platform outages/downtime if present.
+
+    Flexible schema: looks for table names like platform_outages/outages/downtime and columns:
+    - restaurant_id, date, platform
+    - offline_minutes or close_time (minutes)
+    - offline_rate (0..1) optional
+    """
+    table = _resolve_table_name(engine, "platform_outages", aliases=["outages", "downtime", "platform_downtime"])
+    if not table:
+        return pd.DataFrame(columns=["restaurant_id", "date", "platform", "offline_minutes", "offline_rate", "close_time"])
+    df = _read_sql_table(engine, table)
+    df = _normalize_columns(df)
+    date_col = _find_first_column(df, ["date", "day", "recorded_at"]) or "date"
+    rest_col = _find_first_column(df, ["restaurant_id", "rest_id", "store_id"]) or "restaurant_id"
+    platform_col = _find_first_column(df, ["platform", "source", "channel"]) or "platform"
+    minutes_col = _find_first_column(df, ["offline_minutes", "downtime_minutes", "close_time", "minutes"])
+    rate_col = _find_first_column(df, ["offline_rate", "downtime_rate"])
+
+    out = pd.DataFrame({
+        "restaurant_id": pd.to_numeric(df[rest_col], errors="coerce").astype("Int64"),
+        "date": pd.to_datetime(df[date_col], errors="coerce").dt.normalize(),
+        "platform": df[platform_col].astype(str) if platform_col in df.columns else pd.Series([None]*len(df)),
+        "offline_minutes": pd.to_numeric(df.get(minutes_col), errors="coerce") if minutes_col else None,
+        "offline_rate": pd.to_numeric(df.get(rate_col), errors="coerce") if rate_col else None,
+    })
+    # Derive close_time == offline_minutes
+    if "offline_minutes" in out.columns and not isinstance(out["offline_minutes"], type(None)):
+        out["close_time"] = out["offline_minutes"]
+    else:
+        out["close_time"] = None
     out = out.dropna(subset=["restaurant_id", "date"]).copy()
     out["restaurant_id"] = out["restaurant_id"].astype(int)
     return out

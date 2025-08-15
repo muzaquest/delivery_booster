@@ -16,6 +16,9 @@ from etl.data_loader import (
     load_restaurants,
     parse_tourist_flow,
     get_weather_series_for_restaurant,
+    load_operations,
+    load_marketing,
+    load_platform_outages,
 )
 
 
@@ -142,6 +145,51 @@ def build_and_save_dataset(
     merged = merged.merge(tourist_flow, on="date", how="left")
     merged = merged.merge(holidays_flags, on="date", how="left")
     merged["is_holiday"] = merged["is_holiday"].fillna(0).astype(int)
+
+    # Bring in platform-level operations and marketing, outages
+    ops = load_operations(engine)
+    mkt = load_marketing(engine)
+    outages = load_platform_outages(engine)
+
+    # Pivot platform metrics into columns (Grab/Gojek), suffix per metric
+    def _pivot_platform(df: pd.DataFrame, value_cols: list[str], prefix: str) -> pd.DataFrame:
+        if df.empty:
+            return pd.DataFrame(columns=["restaurant_id", "date"])
+        df = df.copy()
+        df["platform"] = df["platform"].fillna("").str.lower()
+        keep_cols = ["restaurant_id", "date", "platform"] + value_cols
+        df = df[keep_cols]
+        wide = df.pivot_table(index=["restaurant_id", "date"], columns="platform", values=value_cols, aggfunc="mean")
+        # Flatten multiindex columns: (col, platform)
+        wide.columns = [f"{prefix}_{col}_{plat}" for (col, plat) in wide.columns.to_flat_index()]
+        wide = wide.reset_index()
+        return wide
+
+    ops_wide = _pivot_platform(ops, ["accepting_time", "delivery_time", "preparation_time", "rating"], prefix="ops")
+    mkt_wide = _pivot_platform(mkt, ["ads_spend", "roas", "impressions", "clicks"], prefix="mkt")
+    out_wide = _pivot_platform(outages, ["offline_minutes", "offline_rate", "close_time"], prefix="outage")
+
+    for extra in (ops_wide, mkt_wide, out_wide):
+        merged = merged.merge(extra, on=["restaurant_id", "date"], how="left")
+
+    # Create combined features per spec
+    # Marketing totals
+    merged["ads_spend_total"] = merged[[c for c in merged.columns if c.startswith("mkt_ads_spend_")]].sum(axis=1)
+    merged["impressions_total"] = merged[[c for c in merged.columns if c.startswith("mkt_impressions_")]].sum(axis=1)
+    # ROAS platform-specific preserved: mkt_roas_grab, mkt_roas_gojek (если есть такие платформы в данных)
+
+    # Ratings per platform kept: ops_rating_grab/gojek
+    # Operational times
+    for base in ("accepting_time", "delivery_time", "preparation_time"):
+        cols = [c for c in merged.columns if c.startswith(f"ops_{base}_")]
+        if cols:
+            merged[f"{base}_mean"] = merged[cols].mean(axis=1)
+
+    # Outages short-hands
+    for base in ("offline_minutes", "offline_rate", "close_time"):
+        cols = [c for c in merged.columns if c.startswith(f"outage_{base}_")]
+        if cols:
+            merged[f"{base}_sum"] = merged[cols].sum(axis=1)
 
     # Temporal features
     merged["date"] = pd.to_datetime(merged["date"])  # ensure dtype
