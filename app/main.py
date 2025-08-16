@@ -4,7 +4,7 @@ import pandas as pd
 from datetime import datetime
 import numpy as np
 
-from ml.inference import predict_with_shap, top_factors
+from ml.inference import predict_and_explain, top_factors
 from app.report_text import generate_full_report
 from app.report_basic import build_basic_report
 
@@ -55,9 +55,12 @@ async def report(period: str = Query(..., description="YYYY-MM-DD_YYYY-MM-DD"), 
     orders = int(period_df["orders_count"].sum()) if "orders_count" in period_df.columns else None
     aov = float(total_sales / orders) if orders and orders > 0 else None
 
-    preds, shap_df, feat_imp = predict_with_shap(period_df)
-    pred_sales_total = float(preds.sum())
-    top = top_factors(feat_imp, top_k=10)
+    try:
+        result = predict_and_explain(period_df)
+        pred_sales_total = float(result["preds"].sum())
+        top = result["top_factors"]
+    except Exception as e:
+        return {"error": f"Model inference failed: {e}"}
 
     return {
         "period": period,
@@ -93,8 +96,11 @@ async def factors(period: str = Query(..., description="YYYY-MM-DD_YYYY-MM-DD"),
     if period_df.empty:
         return {"error": "No data for requested period/restaurant"}
 
-    preds, shap_df, feat_imp = predict_with_shap(period_df)
-    factors_list = top_factors(feat_imp, top_k=20)
+    try:
+        result = predict_and_explain(period_df, top_k=20)
+        factors_list = result["top_factors"]
+    except Exception as e:
+        return {"error": f"Model inference failed: {e}"}
 
     return {
         "period": period,

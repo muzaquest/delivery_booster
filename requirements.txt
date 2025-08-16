@@ -13,3 +13,4 @@ xlrd
 beautifulsoup4
 joblib
 streamlit==1.36.0
+httpx

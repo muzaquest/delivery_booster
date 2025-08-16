@@ -14,11 +14,27 @@ from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 
-ARTIFACT_DIR = "/workspace/ml/artifacts"
+ARTIFACT_DIR = os.getenv("ML_ARTIFACT_DIR", "/workspace/ml/artifacts")
+
+_CACHE: Dict[str, tuple] = {}
 
 
 def load_artifacts(artifact_dir: str = ARTIFACT_DIR):
-    model = joblib.load(os.path.join(artifact_dir, "model.joblib"))
+    global _CACHE
+    key = os.path.abspath(artifact_dir)
+    if key in _CACHE:
+        return _CACHE[key]
+    # model: prefer .pkl, fallback to .joblib
+    model_pkl = os.path.join(artifact_dir, "model.pkl")
+    model_joblib = os.path.join(artifact_dir, "model.joblib")
+    if os.path.exists(model_pkl):
+        import pickle
+        with open(model_pkl, "rb") as f:
+            model = pickle.load(f)
+    elif os.path.exists(model_joblib):
+        model = joblib.load(model_joblib)
+    else:
+        raise FileNotFoundError(f"Model artifact not found in {artifact_dir}")
     with open(os.path.join(artifact_dir, "features.json"), "r", encoding="utf-8") as f:
         features = json.load(f)
     background_path_parquet = os.path.join(artifact_dir, "shap_background.parquet")
@@ -29,7 +45,8 @@ def load_artifacts(artifact_dir: str = ARTIFACT_DIR):
         background = pd.read_csv(background_path_csv)
     else:
         background = None
-    return model, features, background
+    _CACHE[key] = (model, features, background)
+    return _CACHE[key]
 
 
 def load_model_pickle(artifact_dir: str = ARTIFACT_DIR):
@@ -42,14 +59,7 @@ def load_model_pickle(artifact_dir: str = ARTIFACT_DIR):
 
 
 def predict_and_explain(df: pd.DataFrame, artifact_dir: str = ARTIFACT_DIR, top_k: int = 10) -> Dict[str, object]:
-    model_pickle = load_model_pickle(artifact_dir)
-    if model_pickle is not None:
-        model = model_pickle
-        with open(os.path.join(artifact_dir, "features.json"), "r", encoding="utf-8") as f:
-            features = json.load(f)
-        background = pd.read_csv(os.path.join(artifact_dir, "shap_background.csv")) if os.path.exists(os.path.join(artifact_dir, "shap_background.csv")) else None
-    else:
-        model, features, background = load_artifacts(artifact_dir)
+    model, features, background = load_artifacts(artifact_dir)
     X = df[features]
     preds = model.predict(X)
     # SHAP

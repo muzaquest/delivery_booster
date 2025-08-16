@@ -568,7 +568,7 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
             return "\n".join(lines)
 
         # Prepare SHAP per-row
-        model, features, background = load_artifacts("/workspace/ml/artifacts")
+        model, features, background = load_artifacts()
         X = sub[features]
         pre = model.named_steps["pre"]
         mdl = model.named_steps["model"]
