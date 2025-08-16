@@ -32,6 +32,50 @@ def load_artifacts(artifact_dir: str = ARTIFACT_DIR):
     return model, features, background
 
 
+def load_model_pickle(artifact_dir: str = ARTIFACT_DIR):
+    path = os.path.join(artifact_dir, "model.pkl")
+    if not os.path.exists(path):
+        return None
+    import pickle
+    with open(path, "rb") as f:
+        return pickle.load(f)
+
+
+def predict_and_explain(df: pd.DataFrame, artifact_dir: str = ARTIFACT_DIR, top_k: int = 10) -> Dict[str, object]:
+    model_pickle = load_model_pickle(artifact_dir)
+    if model_pickle is not None:
+        model = model_pickle
+        with open(os.path.join(artifact_dir, "features.json"), "r", encoding="utf-8") as f:
+            features = json.load(f)
+        background = pd.read_csv(os.path.join(artifact_dir, "shap_background.csv")) if os.path.exists(os.path.join(artifact_dir, "shap_background.csv")) else None
+    else:
+        model, features, background = load_artifacts(artifact_dir)
+    X = df[features]
+    preds = model.predict(X)
+    # SHAP
+    model_step = model.named_steps["model"]
+    pre_step: ColumnTransformer = model.named_steps["pre"]
+    X_pre = pre_step.transform(X)
+    if background is not None and not background.empty:
+        bg_pre = pre_step.transform(background[features])
+        explainer = shap.TreeExplainer(model_step, data=bg_pre, feature_perturbation="interventional")
+    else:
+        explainer = shap.TreeExplainer(model_step, feature_perturbation="interventional")
+    shap_values = explainer.shap_values(X_pre)
+    # Map back
+    _, groups = _resolve_preprocessed_feature_groups(pre_step)
+    abs_shap = np.abs(shap_values)
+    feature_imp: Dict[str, float] = {}
+    for orig_feat, indices in groups.items():
+        if len(indices) == 0:
+            continue
+        feature_imp[orig_feat] = float(abs_shap[:, indices].mean())
+    return {
+        "preds": preds,
+        "top_factors": top_factors(feature_imp, top_k=top_k),
+    }
+
+
 def _resolve_preprocessed_feature_groups(pre: ColumnTransformer) -> Tuple[List[str], Dict[str, List[int]]]:
     """Return names of preprocessed columns and a mapping from original feature -> indices in preprocessed matrix."""
     names_out: List[str] = []

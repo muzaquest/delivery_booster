@@ -25,6 +25,7 @@ from sklearn.preprocessing import OneHotEncoder
 from sklearn.ensemble import RandomForestRegressor
 import hashlib
 import datetime as dt
+import pickle
 
 
 DEFAULT_DATASET = "/workspace/data/merged_dataset.csv"
@@ -139,6 +140,8 @@ def train_model(csv_path: str = DEFAULT_DATASET, model_dir: str = DEFAULT_MODEL_
 
     # Save artifacts
     joblib.dump(champion, os.path.join(model_dir, "model.joblib"))
+    with open(os.path.join(model_dir, "model.pkl"), "wb") as f:
+        pickle.dump(champion, f)
     joblib.dump(lgbm_pipe, os.path.join(model_dir, "lgbm_model.joblib"))
     joblib.dump(rf_pipe, os.path.join(model_dir, "rf_model.joblib"))
     with open(os.path.join(model_dir, "features.json"), "w", encoding="utf-8") as f:
