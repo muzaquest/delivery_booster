@@ -1,0 +1,18 @@
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+    import sys; sys.path.append('/workspace'); from etl.data_loader import get_engine, load_fake_orders; from etl.feature_engineering import build_and_save_dataset; eng=get_engine('/workspace/database.sqlite'); fake=load_fake_orders(); df=build_and_save_dataset(eng,start_date='2023-01-01',end_date='2025-12-31',output_csv_path='/workspace/data/merged_dataset.csv',excel_paths=['/workspace/1.-Data-Kunjungan-2025-3.xls','/workspace/Table-1-7-Final-1-1.xls'],fake_orders_df=fake); print('rows',len(df))
+                                                                                                                                                                                                                                               ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/etl/feature_engineering.py", line 100, in build_and_save_dataset
+    restaurants_df = load_restaurants(engine)
+  File "/workspace/etl/data_loader.py", line 133, in load_restaurants
+    out = df[[id_col, name_col, lat_col, lon_col]].rename(
+          ~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/.local/lib/python3.13/site-packages/pandas/core/frame.py", line 4113, in __getitem__
+    indexer = self.columns._get_indexer_strict(key, "columns")[1]
+              ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/.local/lib/python3.13/site-packages/pandas/core/indexes/base.py", line 6212, in _get_indexer_strict
+    self._raise_if_missing(keyarr, indexer, axis_name)
+    ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/.local/lib/python3.13/site-packages/pandas/core/indexes/base.py", line 6261, in _raise_if_missing
+    raise KeyError(f"None of [{key}] are in the [{axis_name}]")
+KeyError: "None of [Index(['id', 'name', 'latitude', 'longitude'], dtype='object')] are in the [columns]"
