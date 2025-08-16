@@ -157,9 +157,13 @@ def build_and_save_dataset(
             return pd.DataFrame(columns=["restaurant_id", "date"])
         df = df.copy()
         df["platform"] = df["platform"].fillna("").str.lower()
-        keep_cols = ["restaurant_id", "date", "platform"] + value_cols
+        # keep only existing value columns
+        present_vals = [c for c in value_cols if c in df.columns]
+        if not present_vals:
+            return pd.DataFrame(columns=["restaurant_id", "date"])
+        keep_cols = ["restaurant_id", "date", "platform"] + present_vals
         df = df[keep_cols]
-        wide = df.pivot_table(index=["restaurant_id", "date"], columns="platform", values=value_cols, aggfunc="mean")
+        wide = df.pivot_table(index=["restaurant_id", "date"], columns="platform", values=present_vals, aggfunc="mean")
         # Flatten multiindex columns: (col, platform)
         wide.columns = [f"{prefix}_{col}_{plat}" for (col, plat) in wide.columns.to_flat_index()]
         wide = wide.reset_index()

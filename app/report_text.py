@@ -11,6 +11,10 @@ from app.report_basic import (
     build_quality_report,
 )
 from etl.data_loader import get_engine
+import numpy as np
+import re
+from ml.inference import load_artifacts, _resolve_preprocessed_feature_groups
+import shap
 
 
 def _fmt_idr(x: Optional[float]) -> str:
@@ -437,6 +441,210 @@ def _section7_quality(quality: Dict) -> str:
     return "\n".join(lines)
 
 
+def _fmt_minutes_to_hhmmss(mins: Optional[float]) -> str:
+    if mins is None or (isinstance(mins, float) and np.isnan(mins)):
+        return "—"
+    try:
+        total_seconds = int(round(float(mins) * 60))
+        h = total_seconds // 3600
+        m = (total_seconds % 3600) // 60
+        s = total_seconds % 60
+        return f"{h}:{m:02d}:{s:02d}"
+    except Exception:
+        return "—"
+
+
+def _categorize_feature(name: str) -> str:
+    n = name.lower()
+    if n.startswith("mkt_") or "ads_spend" in n or "impressions" in n or "roas" in n:
+        return "Marketing"
+    if n.startswith("ops_") or any(k in n for k in ["accepting_time", "preparation_time", "delivery_time", "outage_", "offline_"]):
+        return "Operations"
+    if n in ("temp", "rain", "wind", "humidity", "tourist_flow", "is_holiday", "day_of_week", "is_weekend") or any(k in n for k in ["temp_", "rain_", "wind_", "humidity_", "tourist_flow_"]):
+        return "External"
+    if "rating" in n:
+        return "Quality"
+    return "Other"
+
+
+def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
+    try:
+        start_str, end_str = period.split("_")
+        df = pd.read_csv("/workspace/data/merged_dataset.csv", parse_dates=["date"])  # daily rows per restaurant
+        sub = df[(df["restaurant_id"] == restaurant_id) & (df["date"] >= start_str) & (df["date"] <= end_str)].copy()
+        if sub.empty:
+            return "8. 🚨 КРИТИЧЕСКИЕ ДНИ (ML)\n" + ("—" * 72) + "\nНет данных за выбранный период."
+
+        # Median per day and critical threshold (≤ -30% к медиане)
+        daily = sub.groupby("date", as_index=False)["total_sales"].sum().sort_values("date")
+        med = float(daily["total_sales"].median()) if len(daily) else 0.0
+        thr = 0.7 * med
+        critical_dates = daily.loc[daily["total_sales"] <= thr, "date"].dt.normalize().tolist()
+
+        lines: list[str] = []
+        lines.append("8. 🚨 КРИТИЧЕСКИЕ ДНИ (ML)")
+        lines.append("—" * 72)
+        if not critical_dates:
+            lines.append("В периоде нет дней с падением ≥ 30% к медиане.")
+            return "\n".join(lines)
+
+        # Prepare SHAP per-row
+        model, features, background = load_artifacts("/workspace/ml/artifacts")
+        X = sub[features]
+        pre = model.named_steps["pre"]
+        mdl = model.named_steps["model"]
+        X_pre = pre.transform(X)
+        try:
+            if background is not None and not background.empty:
+                bg_pre = pre.transform(background[features])
+                explainer = shap.TreeExplainer(mdl, data=bg_pre, feature_perturbation="interventional")
+            else:
+                explainer = shap.TreeExplainer(mdl, feature_perturbation="interventional")
+            shap_values = explainer.shap_values(X_pre)
+        except Exception:
+            explainer = shap.TreeExplainer(mdl)
+            shap_values = explainer.shap_values(X_pre)
+
+        _, groups = _resolve_preprocessed_feature_groups(pre)
+        # Exclude trivial features
+        pat = [re.compile(r"^orders_count(?!.*conversion).*"), re.compile(r"^total_sales.*"), re.compile(r"^restaurant_id$")]
+        def is_excluded(n: str) -> bool:
+            return any(p.search(n) for p in pat)
+
+        eng = get_engine()
+        for d in critical_dates:
+            day_mask = sub["date"].dt.normalize() == d
+            idxs = np.where(day_mask.values)[0]
+            if len(idxs) == 0:
+                continue
+            # Aggregate contributions over all rows of that date (should typically be 1 per date)
+            contrib_sum: Dict[str, float] = {}
+            for i in idxs:
+                for feat, cols in groups.items():
+                    if is_excluded(feat):
+                        continue
+                    if not cols:
+                        continue
+                    val = float(np.sum(shap_values[i, cols]))
+                    contrib_sum[feat] = contrib_sum.get(feat, 0.0) + val
+            # Top-10 by |impact|
+            top10 = sorted(contrib_sum.items(), key=lambda x: abs(x[1]), reverse=True)[:10]
+            total_abs = sum(abs(v) for v in contrib_sum.values()) or 1.0
+
+            # Group shares
+            group_shares: Dict[str, float] = {}
+            for feat, val in contrib_sum.items():
+                cat = _categorize_feature(feat)
+                group_shares[cat] = group_shares.get(cat, 0.0) + abs(val)
+            for k in list(group_shares.keys()):
+                group_shares[k] = round(100.0 * group_shares[k] / total_abs, 1)
+
+            # Day-level raw details from stats
+            ds = str(d.date())
+            qg = pd.read_sql_query(
+                "SELECT sales, orders, ads_spend, ads_sales, offline_rate FROM grab_stats WHERE restaurant_id=? AND stat_date=?",
+                eng, params=(restaurant_id, ds)
+            )
+            qj = pd.read_sql_query(
+                "SELECT sales, orders, ads_spend, ads_sales, accepting_time, preparation_time, delivery_time, close_time FROM gojek_stats WHERE restaurant_id=? AND stat_date=?",
+                eng, params=(restaurant_id, ds)
+            )
+            grab_off_mins = float(qg.iloc[0]["offline_rate"]) if (not qg.empty and pd.notna(qg.iloc[0]["offline_rate"])) else None
+            gojek_close = str(qj.iloc[0]["close_time"]) if (not qj.empty and pd.notna(qj.iloc[0]["close_time"])) else ""
+            # close_time may be HH:MM:SS
+            def _hms_close(s: str) -> str:
+                parts = s.split(":") if s else []
+                try:
+                    if len(parts) == 3:
+                        h, m, sec = parts
+                        return f"{int(h)}:{int(m):02d}:{int(sec):02d}"
+                except Exception:
+                    pass
+                return "—"
+
+            # Weather/holiday from dataset row (first match of the date)
+            row = sub.loc[day_mask].iloc[0]
+            rain = float(row.get("rain")) if pd.notna(row.get("rain")) else None
+            temp = float(row.get("temp")) if pd.notna(row.get("temp")) else None
+            wind = float(row.get("wind")) if pd.notna(row.get("wind")) else None
+            hum = float(row.get("humidity")) if pd.notna(row.get("humidity")) else None
+            is_hol = int(row.get("is_holiday")) if pd.notna(row.get("is_holiday")) else 0
+            total_sales_day = float(daily.loc[daily["date"] == d, "total_sales"].iloc[0])
+            delta_pct = ((total_sales_day - med) / med * 100.0) if med else None
+
+            lines.append(f"📉 КРИТИЧЕСКИЙ ДЕНЬ: {ds} (выручка: {_fmt_idr(total_sales_day)}; отклонение к медиане: {_fmt_pct(delta_pct)})")
+            lines.append("—" * 72)
+            # Factors table (concise)
+            lines.append("🔎 ТОП‑факторы (ML):")
+            for feat, val in top10:
+                cat = _categorize_feature(feat)
+                direction = "↑" if val > 0 else "↓"
+                share = round(100.0 * abs(val) / total_abs, 1)
+                lines.append(f"  • [{cat}] {feat}: {direction} вклад ~{_fmt_idr(abs(val))} ({share}%)")
+            lines.append("")
+            lines.append("📊 Вклад групп факторов:")
+            for cat in ["Operations", "Marketing", "External", "Quality", "Other"]:
+                if cat in group_shares:
+                    lines.append(f"  • {cat}: {group_shares[cat]}%")
+            lines.append("")
+            lines.append("📅 Контекст дня:")
+            # Platforms/offline
+            lines.append(f"  • 📱 GRAB оффлайн: {_fmt_minutes_to_hhmmss(grab_off_mins)}")
+            lines.append(f"  • 🛵 GOJEK оффлайн: {_hms_close(gojek_close)}")
+            # Marketing
+            if not qg.empty:
+                gs = qg.iloc[0]
+                roas_g = (float(gs["ads_sales"]) / float(gs["ads_spend"])) if (pd.notna(gs["ads_spend"]) and float(gs["ads_spend"])>0) else None
+                lines.append(f"  • 🎯 GRAB: spend {_fmt_idr(gs['ads_spend'])}, ROAS {_fmt_rate(roas_g)}x")
+            if not qj.empty:
+                js = qj.iloc[0]
+                roas_j = (float(js["ads_sales"]) / float(js["ads_spend"])) if (pd.notna(js["ads_spend"]) and float(js["ads_spend"])>0) else None
+                lines.append(f"  • 🎯 GOJEK: spend {_fmt_idr(js['ads_spend'])}, ROAS {_fmt_rate(roas_j)}x")
+            # Operations (GOJEK times)
+            if not qj.empty:
+                def _to_min(v):
+                    s = str(v)
+                    parts = s.split(":")
+                    try:
+                        if len(parts) == 3:
+                            h, m, sec = parts
+                            return int(h)*60 + int(m) + int(sec)/60.0
+                    except Exception:
+                        return None
+                    try:
+                        return float(s)
+                    except Exception:
+                        return None
+                lines.append(f"  • ⏱️ Приготовление: {_fmt_rate(_to_min(qj.iloc[0].get('preparation_time')))} мин")
+                lines.append(f"  • ⏳ Подтверждение: {_fmt_rate(_to_min(qj.iloc[0].get('accepting_time')))} мин")
+                lines.append(f"  • 🚗 Доставка: {_fmt_rate(_to_min(qj.iloc[0].get('delivery_time')))} мин")
+            # Weather/holiday
+            lines.append(f"  • 🌧️ Дождь: {rain if rain is not None else '—'} мм; 🌡️ Темп.: {temp if temp is not None else '—'}°C; 🌬️ Ветер: {wind if wind is not None else '—'}; 💧Влажность: {hum if hum is not None else '—'}")
+            lines.append(f"  • 🎌 Праздник: {'да' if is_hol else 'нет'}")
+            lines.append("")
+            # Brief recommendations (rule-based)
+            recs = []
+            # If operations heavy negative
+            if any((_categorize_feature(f)=="Operations" and v<0) for f,v in top10):
+                recs.append("Сократить SLA (подготовка/подтверждение/доставка) в пике; предзаготовки и слотирование")
+            if any(("roas" in f and v<0) for f,v in top10):
+                recs.append("Переоптимизировать кампании (креативы/сегменты), перераспределить бюджет в связки с ROAS")
+            if rain is not None and rain >= 5.0:
+                recs.append("В дни дождя запускать погодные промо, бонусы курьерам и субсидии доставки")
+            if grab_off_mins and grab_off_mins>0:
+                recs.append("Проверить причины оффлайна Grab и настроить мониторинг доступности")
+            if not recs:
+                recs.append("Проверить комбинацию маркетинг×операции×погода; усилить сильные связки, устранить узкие места")
+            lines.append("💡 Что сделать:")
+            for r in recs:
+                lines.append(f"  • {r}")
+            lines.append("")
+
+        return "\n".join(lines)
+    except Exception:
+        return "8. 🚨 КРИТИЧЕСКИЕ ДНИ (ML)\n" + ("—" * 72) + "\nНе удалось построить раздел (ошибка обработки данных)."
+
+
 def generate_full_report(period: str, restaurant_id: int) -> str:
     basic = build_basic_report(period, restaurant_id)
     marketing = build_marketing_report(period, restaurant_id)
@@ -465,5 +673,8 @@ def generate_full_report(period: str, restaurant_id: int) -> str:
     parts.append("")
     # Section 7
     parts.append(_section7_quality(quality))
+    parts.append("")
+    # Section 8 (ML Critical Days)
+    parts.append(_section8_critical_days_ml(period, restaurant_id))
     parts.append("")
     return "\n".join(parts)

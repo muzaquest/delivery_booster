@@ -95,13 +95,18 @@ def predict_with_shap(df: pd.DataFrame, artifact_dir: str = ARTIFACT_DIR) -> Tup
     # Preprocess
     X_pre = pre_step.transform(X)
 
-    # Background for SHAP
-    if background is not None and not background.empty:
-        bg_pre = pre_step.transform(background[features])
-        explainer = shap.TreeExplainer(model_step, data=bg_pre, feature_perturbation="tree_path_dependent")
-    else:
+    # Background for SHAP (use interventional to avoid leaf coverage errors)
+    try:
+        if background is not None and not background.empty:
+            bg_pre = pre_step.transform(background[features])
+            explainer = shap.TreeExplainer(model_step, data=bg_pre, feature_perturbation="interventional")
+        else:
+            explainer = shap.TreeExplainer(model_step, feature_perturbation="interventional")
+        shap_values = explainer.shap_values(X_pre)
+    except Exception:
+        # Fallback: let SHAP infer background automatically
         explainer = shap.TreeExplainer(model_step)
-    shap_values = explainer.shap_values(X_pre)
+        shap_values = explainer.shap_values(X_pre)
 
     # Map preprocessed columns back to original features
     _, groups = _resolve_preprocessed_feature_groups(pre_step)
@@ -120,10 +125,24 @@ def predict_with_shap(df: pd.DataFrame, artifact_dir: str = ARTIFACT_DIR) -> Tup
     return preds, shap_df, feature_imp
 
 
-def top_factors(feature_imp: Dict[str, float], top_k: int = 10) -> List[Dict[str, float]]:
+def top_factors(feature_imp: Dict[str, float], top_k: int = 10, exclude_patterns: Optional[List[str]] = None) -> List[Dict[str, float]]:
     if not feature_imp:
         return []
-    items = sorted(feature_imp.items(), key=lambda x: x[1], reverse=True)
+    # Exclude trivial features by default
+    default_exclude = [
+        r"^orders_count(?!.*conversion).*",  # orders_count and its lags/rolling
+        r"^total_sales.*",                   # total_sales lags/rolling
+        r"^restaurant_id$",                 # identity
+    ]
+    import re
+    patterns = [re.compile(p) for p in (exclude_patterns or default_exclude)]
+    def is_excluded(name: str) -> bool:
+        return any(p.search(name) for p in patterns)
+
+    filtered = {k: v for k, v in feature_imp.items() if not is_excluded(k)}
+    if not filtered:
+        filtered = feature_imp
+    items = sorted(filtered.items(), key=lambda x: x[1], reverse=True)
     total = sum(v for _, v in items) or 1.0
     result = [
         {"feature": k, "impact": v, "impact_percent": round(100.0 * v / total, 2)}

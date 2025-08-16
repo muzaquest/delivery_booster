@@ -18,6 +18,7 @@ import pandas as pd
 import requests
 import re
 import math
+import numpy as np
 from sqlalchemy import (
     Column,
     Date,
@@ -458,28 +459,33 @@ def _select_daily_from_open_meteo(
 
     if date <= today:
         base_url = OPEN_METEO_ARCHIVE_URL
-        params = {
-            "latitude": latitude,
-            "longitude": longitude,
-            "start_date": start,
-            "end_date": end,
-            "daily": "temperature_2m_mean,precipitation_sum,windspeed_10m_max,relative_humidity_2m_mean",
-            "timezone": "auto",
-        }
+        daily_vars = "temperature_2m_mean,precipitation_sum,windspeed_10m_max,relative_humidity_2m_mean"
     else:
         base_url = OPEN_METEO_FORECAST_URL
+        daily_vars = "temperature_2m_max,precipitation_sum,windspeed_10m_max,relative_humidity_2m_mean"
+
+    def _call(daily_str: str):
         params = {
             "latitude": latitude,
             "longitude": longitude,
             "start_date": start,
             "end_date": end,
-            "daily": "temperature_2m_max,precipitation_sum,windspeed_10m_max,relative_humidity_2m_mean",
+            "daily": daily_str,
             "timezone": "auto",
         }
+        resp = requests.get(base_url, params=params, timeout=30)
+        resp.raise_for_status()
+        return resp.json()
 
-    resp = requests.get(base_url, params=params, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
+    try:
+        data = _call(daily_vars)
+    except Exception:
+        # Retry without humidity which may be unsupported on ERA5 daily
+        try:
+            fallback_vars = ",".join([v for v in daily_vars.split(",") if not v.startswith("relative_humidity_")])
+            data = _call(fallback_vars)
+        except Exception:
+            return {"temp": None, "rain": None, "wind": None, "humidity": None}
 
     daily = data.get("daily") or {}
     dates = daily.get("time") or []
@@ -488,13 +494,120 @@ def _select_daily_from_open_meteo(
 
     # Extract first (and only) entry for the date range
     idx = 0
-    temp_key = "temperature_2m_mean" if "temperature_2m_mean" in daily else "temperature_2m_max"
+    temp_key = "temperature_2m_mean" if "temperature_2m_mean" in daily else ("temperature_2m_max" if "temperature_2m_max" in daily else None)
+    if temp_key is None:
+        return {"temp": None, "rain": None, "wind": None, "humidity": None}
     temp = (daily.get(temp_key) or [None])[idx]
     rain = (daily.get("precipitation_sum") or [None])[idx]
     wind = (daily.get("windspeed_10m_max") or [None])[idx]
     humidity = (daily.get("relative_humidity_2m_mean") or [None])[idx]
 
     return {"temp": temp, "rain": rain, "wind": wind, "humidity": humidity}
+
+
+def _google_geocode(name: str, api_key: str) -> Optional[Tuple[float, float]]:
+    """Geocode a restaurant name using Google APIs with robust fallbacks."""
+    name_q = name.strip()
+    locality_suffixes = [
+        "Bali, Indonesia",
+        "Canggu, Bali, Indonesia",
+        "Seminyak, Bali, Indonesia",
+        "Kuta, Bali, Indonesia",
+        "Denpasar, Bali, Indonesia",
+        "Ubud, Bali, Indonesia",
+        "Jimbaran, Bali, Indonesia",
+        "Sanur, Bali, Indonesia",
+    ]
+    # 1) Try Places API: findplacefromtext
+    try:
+        for suffix in locality_suffixes:
+            query = f"{name_q}, {suffix}" if suffix not in name_q.lower() else name_q
+            url = (
+                "https://maps.googleapis.com/maps/api/place/findplacefromtext/json?"
+                f"input={requests.utils.quote(query)}&inputtype=textquery&fields=geometry&key={api_key}"
+            )
+            resp = requests.get(url, timeout=30)
+            if resp.ok:
+                data = resp.json()
+                results = data.get("candidates") or []
+                if results:
+                    loc = results[0].get("geometry", {}).get("location")
+                    if loc and loc.get("lat") is not None and loc.get("lng") is not None:
+                        return float(loc["lat"]), float(loc["lng"])
+    except Exception:
+        pass
+
+    # 2) Try Geocoding API with Bali context
+    try:
+        for suffix in locality_suffixes:
+            addr = f"{name_q}, {suffix}"
+            url = (
+                "https://maps.googleapis.com/maps/api/geocode/json?"
+                f"address={requests.utils.quote(addr)}&key={api_key}"
+            )
+            resp = requests.get(url, timeout=30)
+            if resp.ok:
+                data = resp.json()
+                results = data.get("results") or []
+                if results:
+                    loc = results[0].get("geometry", {}).get("location")
+                    if loc and loc.get("lat") is not None and loc.get("lng") is not None:
+                        return float(loc["lat"]), float(loc["lng"])
+    except Exception:
+        pass
+
+    # 3) Fallback: OpenStreetMap Nominatim (no key; honest public data)
+    try:
+        headers = {"User-Agent": "restaurant-analytics/1.0 (contact: analytics@example.com)"}
+        for suffix in locality_suffixes:
+            addr = f"{name_q}, {suffix}"
+            url = (
+                "https://nominatim.openstreetmap.org/search?"
+                f"q={requests.utils.quote(addr)}&format=json&limit=1"
+            )
+            resp = requests.get(url, headers=headers, timeout=30)
+            if resp.ok:
+                arr = resp.json() or []
+                if arr:
+                    lat = arr[0].get("lat")
+                    lon = arr[0].get("lon")
+                    if lat is not None and lon is not None:
+                        return float(lat), float(lon)
+    except Exception:
+        pass
+
+    return None
+
+
+# Define a safe wrapper for geocoding in case order of definitions changes
+def _safe_google_geocode(name: str, api_key: str):
+    try:
+        return _google_geocode(name, api_key)
+    except NameError:
+        return None
+
+
+def _guess_restaurant_name(engine: Engine, restaurant_id: int) -> Optional[str]:
+    inspector = inspect(engine)
+    # Try known stats tables to extract a name
+    for table in ("grab_stats", "gojek_stats"):
+        if table in inspector.get_table_names():
+            try:
+                df = pd.read_sql_query(
+                    f"SELECT * FROM {table} WHERE restaurant_id = :rid LIMIT 1",
+                    engine,
+                    params={"rid": restaurant_id},
+                )
+                if not df.empty:
+                    df = _normalize_columns(df)
+                    name_col = _find_first_column(df, ["name", "restaurant_name", "store_name", "title"]) or None
+                    if name_col and name_col in df.columns:
+                        val = str(df.iloc[0][name_col]).strip()
+                        if val:
+                            return val
+            except Exception:
+                continue
+    return None
 
 
 def get_restaurant_coordinates(restaurant_id: int, restaurant_name: str, engine: Engine) -> Optional[Tuple[float, float]]:
@@ -511,6 +624,13 @@ def get_restaurant_coordinates(restaurant_id: int, restaurant_name: str, engine:
                         return float(df_norm.iloc[0][lat_col]), float(df_norm.iloc[0][lon_col])
                     except Exception:
                         pass
+        # Resolve name if possible
+        if not df_norm.empty:
+            name_col = _find_first_column(df_norm, ["name", "restaurant_name", "store_name", "title"]) or None
+            if name_col and name_col in df_norm.columns:
+                val = df_norm.iloc[0][name_col]
+                if isinstance(val, str) and val.strip():
+                    restaurant_name = val.strip()
     # 2) Try geocode cache
     geo_tbl = ensure_geocode_cache_table(engine)
     with engine.begin() as conn:
@@ -521,7 +641,12 @@ def get_restaurant_coordinates(restaurant_id: int, restaurant_name: str, engine:
     api_key = _google_api_key()
     if not api_key:
         return None
-    coords = _google_geocode(restaurant_name, api_key)
+    # If we have no name, try to guess from stats tables
+    if not restaurant_name or not str(restaurant_name).strip():
+        guessed = _guess_restaurant_name(engine, restaurant_id)
+        if guessed:
+            restaurant_name = guessed
+    coords = _safe_google_geocode(restaurant_name, api_key)
     if coords is None:
         return None
     with engine.begin() as conn:
@@ -615,25 +740,40 @@ def _select_daily_range_from_open_meteo(
     start = start_date.strftime("%Y-%m-%d")
     end = end_date.strftime("%Y-%m-%d")
 
-    # Use archive endpoint for historical range (ERA5)
-    params = {
-        "latitude": latitude,
-        "longitude": longitude,
-        "start_date": start,
-        "end_date": end,
-        "daily": "temperature_2m_mean,precipitation_sum,windspeed_10m_max,relative_humidity_2m_mean",
-        "timezone": "auto",
-    }
-    resp = requests.get(OPEN_METEO_ARCHIVE_URL, params=params, timeout=60)
-    resp.raise_for_status()
-    data = resp.json() or {}
+    daily_vars = "temperature_2m_mean,precipitation_sum,windspeed_10m_max,relative_humidity_2m_mean"
+
+    def _call(daily_str: str):
+        params = {
+            "latitude": latitude,
+            "longitude": longitude,
+            "start_date": start,
+            "end_date": end,
+            "daily": daily_str,
+            "timezone": "auto",
+        }
+        resp = requests.get(OPEN_METEO_ARCHIVE_URL, params=params, timeout=60)
+        resp.raise_for_status()
+        return resp.json() or {}
+
+    try:
+        data = _call(daily_vars)
+    except Exception:
+        # retry without humidity
+        try:
+            fallback_vars = ",".join([v for v in daily_vars.split(",") if not v.startswith("relative_humidity_")])
+            data = _call(fallback_vars)
+        except Exception:
+            return pd.DataFrame(columns=["date", "temp", "rain", "wind", "humidity"])
+
     daily = data.get("daily") or {}
 
     times = daily.get("time") or []
     if not times:
         return pd.DataFrame(columns=["date", "temp", "rain", "wind", "humidity"])
 
-    temp_key = "temperature_2m_mean" if "temperature_2m_mean" in daily else "temperature_2m_max"
+    temp_key = "temperature_2m_mean" if "temperature_2m_mean" in daily else ("temperature_2m_max" if "temperature_2m_max" in daily else None)
+    if temp_key is None:
+        return pd.DataFrame(columns=["date", "temp", "rain", "wind", "humidity"])
     temp_vals = daily.get(temp_key) or [None] * len(times)
     rain_vals = daily.get("precipitation_sum") or [None] * len(times)
     wind_vals = daily.get("windspeed_10m_max") or [None] * len(times)
@@ -668,14 +808,11 @@ def get_weather_series_for_restaurant(
             df_rest = pd.read_sql_query(f"SELECT * FROM {restaurants_table} WHERE id = :rid", conn, params={"rid": restaurant_id})
         else:
             df_rest = pd.DataFrame()
-    if df_rest.empty:
+    rest_name = None if df_rest.empty else _normalize_columns(df_rest).iloc[0].get("name")
+    coords = get_restaurant_coordinates(restaurant_id, rest_name or f"restaurant_{restaurant_id}", engine)
+    if coords is None:
         return pd.DataFrame(columns=["restaurant_id", "date", "temp", "rain", "wind", "humidity"])
-
-    rest_norm = _normalize_columns(df_rest)
-    lat_col = _find_first_column(rest_norm, ["latitude", "lat"]) or "latitude"
-    lon_col = _find_first_column(rest_norm, ["longitude", "lon", "lng"]) or "longitude"
-    latitude = float(rest_norm.iloc[0][lat_col])
-    longitude = float(rest_norm.iloc[0][lon_col])
+    latitude, longitude = coords
 
     # Read what we already have in cache for the range
     with engine.begin() as conn:
@@ -767,7 +904,7 @@ def _load_platform_stats(engine: Engine, table_name: str, platform: str) -> pd.D
     inspector = inspect(engine)
     if table_name not in inspector.get_table_names():
         return pd.DataFrame()
-    df = pd.read_sql_table(table_name, engine)
+    df = pd.read_sql_query(f"SELECT * FROM {table_name}", engine)
     df = _normalize_columns(df)
     date_col = _find_first_column(df, ["stat_date", "date"]) or "stat_date"
     rest_col = _find_first_column(df, ["restaurant_id", "rest_id", "store_id"]) or "restaurant_id"
