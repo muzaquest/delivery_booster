@@ -704,14 +704,14 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
             # What-if: улучшение SLA и маркетинга, снятие оффлайна
             try:
                 row_idx = idxs[0]
-                xrow = X.iloc[[row_idx]].copy()
+                xrow = X.iloc[[row_idx]].copy(deep=True)
                 for col in ["preparation_time_mean", "accepting_time_mean", "delivery_time_mean"]:
                     if col in xrow.columns and pd.notna(xrow.iloc[0][col]):
-                        xrow.iloc[0][col] = max(0.0, float(xrow.iloc[0][col]) * 0.9)
+                        xrow.loc[xrow.index[0], col] = max(0.0, float(xrow.iloc[0][col]) * 0.9)
                 if "outage_offline_rate_grab" in xrow.columns and pd.notna(xrow.iloc[0]["outage_offline_rate_grab"]):
-                    xrow.iloc[0]["outage_offline_rate_grab"] = 0.0
+                    xrow.loc[xrow.index[0], "outage_offline_rate_grab"] = 0.0
                 if "ads_spend_total" in xrow.columns and pd.notna(xrow.iloc[0]["ads_spend_total"]):
-                    xrow.iloc[0]["ads_spend_total"] = float(xrow.iloc[0]["ads_spend_total"]) * 1.1
+                    xrow.loc[xrow.index[0], "ads_spend_total"] = float(xrow.iloc[0]["ads_spend_total"]) * 1.1
                 uplift = float(model.predict(xrow)[0] - model.predict(X.iloc[[row_idx]])[0])
                 lines.append(f"🔮 What‑if (−10% SLA, +10% бюджет, без оффлайна): ожидаемый прирост ~{_fmt_idr(uplift)}")
             except Exception:
@@ -729,6 +729,8 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
         if 0 in by_h:
             dh = (by_h.get(1, by_h[0]) - by_h[0]) / (by_h[0] or 1.0) * 100.0
             lines.append(f"  • 🎌 Праздники (простая разница средних): {_fmt_pct(dh)}")
+        lines.append("")
+        lines.append("Источники: SQLite (grab_stats, gojek_stats), Open‑Meteo, Holidays cache")
         return "\n".join(lines)
     except Exception:
         return "8. 🚨 КРИТИЧЕСКИЕ ДНИ (ML)\n" + ("—" * 72) + "\nНе удалось построить раздел (ошибка обработки данных)."
