@@ -1,0 +1,41 @@
+ETL start
+Traceback (most recent call last):
+  File "<stdin>", line 10, in <module>
+  File "/workspace/etl/feature_engineering.py", line 101, in build_and_save_dataset
+    orders_daily = load_orders(engine, fake_orders_df=fake_orders_df)
+  File "/workspace/etl/data_loader.py", line 269, in load_orders
+    df = load_orders_raw(engine)
+  File "/workspace/etl/data_loader.py", line 260, in load_orders_raw
+    return _load_platforms_combined(engine)
+  File "/workspace/etl/data_loader.py", line 834, in _load_platforms_combined
+    grab = _load_platform_stats(engine, "grab_stats", "grab")
+  File "/workspace/etl/data_loader.py", line 770, in _load_platform_stats
+    df = pd.read_sql_table(table_name, engine)
+  File "/home/ubuntu/.local/lib/python3.13/site-packages/pandas/io/sql.py", line 390, in read_sql_table
+    table = pandas_sql.read_table(
+        table_name,
+    ...<5 lines>...
+        dtype_backend=dtype_backend,
+    )
+  File "/home/ubuntu/.local/lib/python3.13/site-packages/pandas/io/sql.py", line 1741, in read_table
+    return table.read(
+           ~~~~~~~~~~^
+        self.exit_stack,
+        ^^^^^^^^^^^^^^^^
+    ...<4 lines>...
+        dtype_backend=dtype_backend,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/ubuntu/.local/lib/python3.13/site-packages/pandas/io/sql.py", line 1199, in read
+    data = result.fetchall()
+  File "/home/ubuntu/.local/lib/python3.13/site-packages/sqlalchemy/engine/result.py", line 1322, in fetchall
+    return self._allrows()
+           ~~~~~~~~~~~~~^^
+  File "/home/ubuntu/.local/lib/python3.13/site-packages/sqlalchemy/engine/result.py", line 551, in _allrows
+    made_rows = [make_row(row) for row in rows]
+                 ~~~~~~~~^^^^^
+  File "lib/sqlalchemy/cyextension/resultproxy.pyx", line 22, in sqlalchemy.cyextension.resultproxy.BaseRow.__init__
+  File "lib/sqlalchemy/cyextension/resultproxy.pyx", line 79, in sqlalchemy.cyextension.resultproxy._apply_processors
+  File "lib/sqlalchemy/cyextension/processors.pyx", line 40, in sqlalchemy.cyextension.processors.str_to_datetime
+ValueError: Invalid isoformat string: '2024-09-17 12:00:39.894 +00:00'
