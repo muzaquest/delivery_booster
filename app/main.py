@@ -4,9 +4,11 @@ import pandas as pd
 from datetime import datetime
 import numpy as np
 
-from ml.inference import predict_and_explain, top_factors
+from ml.inference import predict_and_explain, top_factors, load_artifacts
 from app.report_text import generate_full_report
 from app.report_basic import build_basic_report
+import json
+import os
 
 app = FastAPI(title="Restaurant Sales Analytics API", version="0.1.0")
 
@@ -15,6 +17,37 @@ app = FastAPI(title="Restaurant Sales Analytics API", version="0.1.0")
 async def health() -> dict:
     """Healthcheck endpoint returning service status."""
     return {"status": "ok"}
+
+
+@app.on_event("startup")
+async def _warmup_model() -> None:
+    try:
+        load_artifacts()
+    except Exception:
+        # Warmup best-effort; service still responds with graceful errors
+        pass
+
+
+@app.get("/ml/status")
+async def ml_status() -> dict:
+    try:
+        # Load metrics
+        metrics_path = os.getenv("ML_ARTIFACT_DIR", "/workspace/ml/artifacts")
+        mfile = os.path.join(metrics_path, "metrics.json")
+        cfile = os.path.join(metrics_path, "champion.json")
+        metrics = {}
+        champion = {}
+        if os.path.exists(mfile):
+            with open(mfile, "r", encoding="utf-8") as f:
+                metrics = json.load(f)
+        if os.path.exists(cfile):
+            with open(cfile, "r", encoding="utf-8") as f:
+                champion = json.load(f)
+        # Ensure we can load model
+        load_artifacts()
+        return {"ready": True, "metrics": metrics, "champion": champion}
+    except Exception as e:
+        return {"ready": False, "error": str(e)}
 
 
 @app.get("/report-basic")
