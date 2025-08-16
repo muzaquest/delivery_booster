@@ -486,6 +486,19 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
         lines.append("—" * 72)
         if not critical_dates:
             lines.append("В периоде нет дней с падением ≥ 30% к медиане.")
+            # Добавим краткий причинный срез по дождю/праздникам для периода
+            sub['heavy_rain'] = (sub['rain'].fillna(0.0) >= 10.0).astype(int)
+            def _mean(series):
+                s = pd.to_numeric(series, errors='coerce')
+                return float(s.mean()) if len(s) else 0.0
+            by_rain = sub.groupby('heavy_rain')['total_sales'].mean().to_dict()
+            if 0 in by_rain:
+                dr = (by_rain.get(1, by_rain[0]) - by_rain[0]) / (by_rain[0] or 1.0) * 100.0
+                lines.append(f"🌧️ Эффект дождя (простая разница средних): {_fmt_pct(dr)}")
+            by_h = sub.groupby(sub['is_holiday'].fillna(0).astype(int))['total_sales'].mean().to_dict()
+            if 0 in by_h:
+                dh = (by_h.get(1, by_h[0]) - by_h[0]) / (by_h[0] or 1.0) * 100.0
+                lines.append(f"🎌 Эффект праздников (простая разница средних): {_fmt_pct(dh)}")
             return "\n".join(lines)
 
         # Prepare SHAP per-row
@@ -622,24 +635,34 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
             lines.append(f"  • 🌧️ Дождь: {rain if rain is not None else '—'} мм; 🌡️ Темп.: {temp if temp is not None else '—'}°C; 🌬️ Ветер: {wind if wind is not None else '—'}; 💧Влажность: {hum if hum is not None else '—'}")
             lines.append(f"  • 🎌 Праздник: {'да' if is_hol else 'нет'}")
             lines.append("")
-            # Brief recommendations (rule-based)
-            recs = []
-            # If operations heavy negative
-            if any((_categorize_feature(f)=="Operations" and v<0) for f,v in top10):
-                recs.append("Сократить SLA (подготовка/подтверждение/доставка) в пике; предзаготовки и слотирование")
-            if any(("roas" in f and v<0) for f,v in top10):
-                recs.append("Переоптимизировать кампании (креативы/сегменты), перераспределить бюджет в связки с ROAS")
-            if rain is not None and rain >= 5.0:
-                recs.append("В дни дождя запускать погодные промо, бонусы курьерам и субсидии доставки")
-            if grab_off_mins and grab_off_mins>0:
-                recs.append("Проверить причины оффлайна Grab и настроить мониторинг доступности")
-            if not recs:
-                recs.append("Проверить комбинацию маркетинг×операции×погода; усилить сильные связки, устранить узкие места")
-            lines.append("💡 Что сделать:")
-            for r in recs:
-                lines.append(f"  • {r}")
+            # What-if: улучшение SLA и маркетинга, снятие оффлайна
+            try:
+                row_idx = idxs[0]
+                xrow = X.iloc[[row_idx]].copy()
+                for col in ["preparation_time_mean", "accepting_time_mean", "delivery_time_mean"]:
+                    if col in xrow.columns and pd.notna(xrow.iloc[0][col]):
+                        xrow.iloc[0][col] = max(0.0, float(xrow.iloc[0][col]) * 0.9)
+                if "outage_offline_rate_grab" in xrow.columns and pd.notna(xrow.iloc[0]["outage_offline_rate_grab"]):
+                    xrow.iloc[0]["outage_offline_rate_grab"] = 0.0
+                if "ads_spend_total" in xrow.columns and pd.notna(xrow.iloc[0]["ads_spend_total"]):
+                    xrow.iloc[0]["ads_spend_total"] = float(xrow.iloc[0]["ads_spend_total"]) * 1.1
+                uplift = float(model.predict(xrow)[0] - model.predict(X.iloc[[row_idx]])[0])
+                lines.append(f"🔮 What‑if (−10% SLA, +10% бюджет, без оффлайна): ожидаемый прирост ~{_fmt_idr(uplift)}")
+            except Exception:
+                pass
             lines.append("")
 
+        # Диагностика периода: простые оценки эффекта дождя и праздников
+        lines.append("Диагностика факторов за период:")
+        sub['heavy_rain'] = (sub['rain'].fillna(0.0) >= 10.0).astype(int)
+        by_rain = sub.groupby('heavy_rain')['total_sales'].mean().to_dict()
+        if 0 in by_rain:
+            dr = (by_rain.get(1, by_rain[0]) - by_rain[0]) / (by_rain[0] or 1.0) * 100.0
+            lines.append(f"  • 🌧️ Дождь (простая разница средних): {_fmt_pct(dr)}")
+        by_h = sub.groupby(sub['is_holiday'].fillna(0).astype(int))['total_sales'].mean().to_dict()
+        if 0 in by_h:
+            dh = (by_h.get(1, by_h[0]) - by_h[0]) / (by_h[0] or 1.0) * 100.0
+            lines.append(f"  • 🎌 Праздники (простая разница средних): {_fmt_pct(dh)}")
         return "\n".join(lines)
     except Exception:
         return "8. 🚨 КРИТИЧЕСКИЕ ДНИ (ML)\n" + ("—" * 72) + "\nНе удалось построить раздел (ошибка обработки данных)."
