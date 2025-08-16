@@ -534,16 +534,30 @@ def build_basic_report(period: str, restaurant_id: Optional[int]) -> Dict:
 
     total_sales = (grab_block.get("sales", 0.0) + gojek_block.get("sales", 0.0))
     total_orders = (grab_block.get("orders", 0) + gojek_block.get("orders", 0))
-    # Successful orders by platform if fake known (handled elsewhere); here keep placeholders, can be passed in later
-    # If accepted_orders column exists in platform tables, we can use it (present in gojek)
-    successful_grab = None
-    successful_gojek = None
-    if not grab.empty and "orders" in grab.columns and "cancelled_orders" in grab.columns:
-        # fake will be incorporated at ETL time; here just orders - cancelled if no fake data
-        pass
-    if not gojek.empty and "accepted_orders" in gojek.columns:
-        successful_gojek = int(pd.to_numeric(gojek["accepted_orders"], errors="coerce").fillna(0).sum())
-    # AOVs (require successful counts); will be computed by caller if necessary
+    # Fake orders per platform (from Google Sheet)
+    eng = get_engine()
+    rest_name = _get_restaurant_name(eng, restaurant_id) if restaurant_id is not None else None
+    fake_grab = _fake_orders_for_platform_period(rest_name, 'grab', start, end)
+    fake_gojek = _fake_orders_for_platform_period(rest_name, 'gojek', start, end)
+    # Cancelled/lost per platform
+    def _sum_col(df: pd.DataFrame, col: str) -> int:
+        return int(pd.to_numeric(df.get(col), errors="coerce").fillna(0).sum()) if (not df.empty and col in df.columns) else 0
+    canc_grab = _sum_col(grab, "cancelled_orders")
+    lost_grab = _sum_col(grab, "lost_orders")
+    canc_gojek = _sum_col(gojek, "cancelled_orders")
+    lost_gojek = _sum_col(gojek, "lost_orders")
+    # Successful = orders − cancelled − lost − fake
+    ord_grab = int(pd.to_numeric(grab.get("orders"), errors="coerce").fillna(0).sum()) if not grab.empty else 0
+    ord_gojek = int(pd.to_numeric(gojek.get("orders"), errors="coerce").fillna(0).sum()) if not gojek.empty else 0
+    succ_grab = max(ord_grab - canc_grab - lost_grab - fake_grab, 0)
+    succ_gojek = max(ord_gojek - canc_gojek - lost_gojek - fake_gojek, 0)
+    succ_total = succ_grab + succ_gojek
+    # AOVs based on successful orders
+    sales_grab = float(grab_block.get("sales", 0.0))
+    sales_gojek = float(gojek_block.get("sales", 0.0))
+    aov_grab = (sales_grab / succ_grab) if succ_grab else None
+    aov_gojek = (sales_gojek / succ_gojek) if succ_gojek else None
+    aov_total = (total_sales / succ_total) if succ_total else None
 
     # Weekend vs Weekday
     parts = []
@@ -573,6 +587,11 @@ def build_basic_report(period: str, restaurant_id: Optional[int]) -> Dict:
                 "grab": grab_block,
                 "gojek": gojek_block,
             },
+            "fake_orders": {"grab": int(fake_grab), "gojek": int(fake_gojek), "total": int(fake_grab + fake_gojek)},
+            "cancellations": {"grab": int(canc_grab), "gojek": int(canc_gojek), "total": int(canc_grab + canc_gojek)},
+            "lost_orders": {"grab": int(lost_grab), "gojek": int(lost_gojek), "total": int(lost_grab + lost_gojek)},
+            "successful_orders": {"grab": int(succ_grab), "gojek": int(succ_gojek), "total": int(succ_total)},
+            "aov": {"grab": aov_grab, "gojek": aov_gojek, "total": aov_total},
             "daily_revenue_workdays_avg": wd_stats.get("avg_workdays", 0.0),
             "daily_revenue_all_avg": wd_stats.get("avg_all_days", 0.0),
         },
