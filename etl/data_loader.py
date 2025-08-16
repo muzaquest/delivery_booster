@@ -126,14 +126,29 @@ def load_restaurants(engine: Engine) -> pd.DataFrame:
     if not table:
         return pd.DataFrame(columns=["id", "name", "latitude", "longitude"])  # empty placeholder
     df = _read_sql_table(engine, table)
-    id_col = _find_first_column(df, ["id", "restaurant_id", "rest_id", "store_id"]) or "id"
-    name_col = _find_first_column(df, ["name", "restaurant_name", "title"]) or "name"
-    lat_col = _find_first_column(df, ["latitude", "lat", "y"]) or "latitude"
-    lon_col = _find_first_column(df, ["longitude", "lon", "lng", "x"]) or "longitude"
-    out = df[[id_col, name_col, lat_col, lon_col]].rename(
-        columns={id_col: "id", name_col: "name", lat_col: "latitude", lon_col: "longitude"}
+    id_col = _find_first_column(df, ["id", "restaurant_id", "rest_id", "store_id"]) or None
+    name_col = _find_first_column(df, ["name", "restaurant_name", "title"]) or None
+    lat_col = _find_first_column(df, ["latitude", "lat", "y"])  # may be missing
+    lon_col = _find_first_column(df, ["longitude", "lon", "lng", "x"])  # may be missing
+
+    if id_col is None:
+        return pd.DataFrame(columns=["id", "name", "latitude", "longitude"])  # cannot proceed without ids
+
+    cols = [c for c in [id_col, name_col, lat_col, lon_col] if c and c in df.columns]
+    out = df[cols].rename(
+        columns={
+            id_col: "id",
+            **({name_col: "name"} if name_col and name_col in df.columns else {}),
+            **({lat_col: "latitude"} if lat_col and lat_col in df.columns else {}),
+            **({lon_col: "longitude"} if lon_col and lon_col in df.columns else {}),
+        }
     )
-    out = out.dropna(subset=["id", "latitude", "longitude"]).copy()
+    # Ensure required columns exist
+    for col in ["name", "latitude", "longitude"]:
+        if col not in out.columns:
+            out[col] = pd.NA
+
+    out = out.dropna(subset=["id"]).copy()
     out["id"] = out["id"].astype(int)
     return out
 
