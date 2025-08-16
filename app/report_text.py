@@ -669,56 +669,14 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
         return "8. 🚨 КРИТИЧЕСКИЕ ДНИ (ML)\n" + ("—" * 72) + "\nНе удалось построить раздел (ошибка обработки данных)."
 
 
-def _section9_external(period: str, restaurant_id: int) -> str:
-    try:
-        start_str, end_str = period.split("_")
-        df = pd.read_csv("/workspace/data/merged_dataset.csv", parse_dates=["date"]) if os.path.exists("/workspace/data/merged_dataset.csv") else pd.DataFrame()
-        sub = df[(df.get("restaurant_id") == restaurant_id) & (df.get("date") >= start_str) & (df.get("date") <= end_str)].copy() if not df.empty else pd.DataFrame()
-        lines = []
-        lines.append("9. 🌍 ВНЕШНИЕ ФАКТОРЫ (ПОГОДА, ПРАЗДНИКИ, ТУРИЗМ)")
-        lines.append("—" * 72)
-        if sub.empty:
-            lines.append("Нет данных по внешним факторам за период.")
-            return "\n".join(lines)
-
-        # Weather summary
-        r = pd.to_numeric(sub.get('rain'), errors='coerce')
-        t = pd.to_numeric(sub.get('temp'), errors='coerce')
-        heavy_days = int(((r.fillna(0.0) >= 10.0).sum())) if 'rain' in sub.columns else 0
-        lines.append("Погода:")
-        lines.append(f"  • Дней с сильным дождём (≥10 мм): {heavy_days}")
-        lines.append(f"  • Средняя температура: {_fmt_rate(float(t.mean()) if t.notna().any() else None)} °C")
-        lines.append(f"  • Средние осадки: {_fmt_rate(float(r.mean()) if r.notna().any() else None)} мм")
-
-        # Holidays
-        is_h = sub.get('is_holiday')
-        if is_h is not None:
-            hol_days = int(pd.to_numeric(is_h, errors='coerce').fillna(0).astype(int).sum())
-        else:
-            hol_days = 0
-        lines.append("Праздники:")
-        lines.append(f"  • Дней с праздниками: {hol_days}")
-        lines.append("  • Источники: Nager.Date + локальные балийские (кеш)")
-
-        # Tourism index (if present)
-        tf = pd.to_numeric(sub.get('tourist_flow'), errors='coerce') if 'tourist_flow' in sub.columns else None
-        if tf is not None and tf.notna().any():
-            lines.append("Туризм:")
-            lines.append(f"  • Средний индекс турпотока: {_fmt_rate(float(tf.mean()))}")
-            lines.append(f"  • Тренд (последние 14 дней): {_fmt_rate(float(tf.tail(14).mean()) - float(tf.head(14).mean()))}")
-        return "\n".join(lines)
-    except Exception:
-        return "9. 🌍 ВНЕШНИЕ ФАКТОРЫ\n" + ("—" * 72) + "\nНе удалось собрать сводку."
-
-
-def _section10_recommendations(period: str, restaurant_id: int) -> str:
+def _section9_recommendations(period: str, restaurant_id: int) -> str:
     try:
         # Use SHAP over the whole period to prioritize levers; exclude trivial features
         start_str, end_str = period.split("_")
         df = pd.read_csv("/workspace/data/merged_dataset.csv", parse_dates=["date"]) if os.path.exists("/workspace/data/merged_dataset.csv") else pd.DataFrame()
         sub = df[(df.get("restaurant_id") == restaurant_id) & (df.get("date") >= start_str) & (df.get("date") <= end_str)].copy() if not df.empty else pd.DataFrame()
         lines = []
-        lines.append("10. 🎯 СТРАТЕГИЧЕСКИЕ РЕКОМЕНДАЦИИ")
+        lines.append("9. 🎯 СТРАТЕГИЧЕСКИЕ РЕКОМЕНДАЦИИ")
         lines.append("—" * 72)
         if sub.empty:
             lines.append("Нет данных за период.")
@@ -781,7 +739,7 @@ def _section10_recommendations(period: str, restaurant_id: int) -> str:
         lines.append("  • Контроль качества и рейтингов: работа с негативом, улучшение времени ожидания")
         return "\n".join(lines)
     except Exception:
-        return "10. 🎯 СТРАТЕГИЧЕСКИЕ РЕКОМЕНДАЦИИ\n" + ("—" * 72) + "\nНе удалось построить рекомендации."
+        return "9. 🎯 СТРАТЕГИЧЕСКИЕ РЕКОМЕНДАЦИИ\n" + ("—" * 72) + "\nНе удалось построить рекомендации."
 
 
 def generate_full_report(period: str, restaurant_id: int) -> str:
@@ -816,10 +774,7 @@ def generate_full_report(period: str, restaurant_id: int) -> str:
     # Section 8 (ML Critical Days)
     parts.append(_section8_critical_days_ml(period, restaurant_id))
     parts.append("")
-    # Section 9 (External factors)
-    parts.append(_section9_external(period, restaurant_id))
-    parts.append("")
-    # Section 10 (Recommendations)
-    parts.append(_section10_recommendations(period, restaurant_id))
+    # Section 9 (Recommendations)
+    parts.append(_section9_recommendations(period, restaurant_id))
     parts.append("")
     return "\n".join(parts)
