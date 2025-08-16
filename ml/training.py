@@ -23,6 +23,8 @@ from sklearn.metrics import mean_absolute_error, r2_score
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.ensemble import RandomForestRegressor
+import hashlib
+import datetime as dt
 
 
 DEFAULT_DATASET = "/workspace/data/merged_dataset.csv"
@@ -118,6 +120,23 @@ def train_model(csv_path: str = DEFAULT_DATASET, model_dir: str = DEFAULT_MODEL_
     background_idx = np.random.RandomState(42).choice(len(X_train), size=min(500, len(X_train)), replace=False)
     background_sample = X_train.iloc[background_idx]
 
+    # Dataset fingerprint
+    def _file_hash(path: str) -> str:
+        h = hashlib.sha256()
+        with open(path, 'rb') as f:
+            for chunk in iter(lambda: f.read(8192), b''):
+                h.update(chunk)
+        return h.hexdigest()
+    data_hash = _file_hash(csv_path)
+    run_ts = dt.datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    meta = {
+        "dataset_path": csv_path,
+        "dataset_rows": int(len(df)),
+        "dataset_hash": data_hash,
+        "run_at_utc": run_ts,
+        "champion": champion_name,
+    }
+
     # Save artifacts
     joblib.dump(champion, os.path.join(model_dir, "model.joblib"))
     joblib.dump(lgbm_pipe, os.path.join(model_dir, "lgbm_model.joblib"))
@@ -125,12 +144,16 @@ def train_model(csv_path: str = DEFAULT_DATASET, model_dir: str = DEFAULT_MODEL_
     with open(os.path.join(model_dir, "features.json"), "w", encoding="utf-8") as f:
         json.dump(feat_cols, f)
     with open(os.path.join(model_dir, "metrics.json"), "w", encoding="utf-8") as f:
-        json.dump({"lightgbm": lgbm_metrics, "random_forest": rf_metrics, "champion": champion_name}, f, indent=2)
+        json.dump({
+            "lightgbm": lgbm_metrics,
+            "random_forest": rf_metrics,
+            **meta,
+        }, f, indent=2)
     with open(os.path.join(model_dir, "champion.json"), "w", encoding="utf-8") as f:
         json.dump({"champion": champion_name}, f)
     background_sample.to_csv(os.path.join(model_dir, "shap_background.csv"), index=False)
 
-    return {"lightgbm": lgbm_metrics, "random_forest": rf_metrics, "champion": champion_name}
+    return {"lightgbm": lgbm_metrics, "random_forest": rf_metrics, **meta}
 
 
 def main() -> None:
