@@ -79,6 +79,44 @@ def _section1_exec(basic: Dict) -> str:
     # AOVs
     if aov:
         lines.append(f"💵 Средний чек (успешные): общий { _fmt_idr(aov.get('total')) }; GRAB { _fmt_idr(aov.get('grab')) }; GOJEK { _fmt_idr(aov.get('gojek')) }")
+    # Daily revenue
+    drw = es.get('daily_revenue_workdays_avg')
+    if drw is not None:
+        lines.append(f"📊 Дневная выручка: {_fmt_idr(drw)} (средняя по рабочим дням)")
+    # Rating
+    rat = es.get('rating_avg_total')
+    if rat:
+        lines.append(f"⭐ Средний рейтинг: {_fmt_rate(float(rat), 2)}/5.0")
+    # Clients
+    cli = es.get('clients', {})
+    if cli:
+        tot = cli.get('total_unique')
+        lines.append(f"👥 Обслужено клиентов: {tot if tot is not None else '—'}")
+        g = cli.get('grab', {})
+        j = cli.get('gojek', {})
+        lines.append(f"   ├── 📱 GRAB: {g.get('total','—')} (новые: {g.get('new','—')}, повторные: {g.get('repeated','—')}, реактивированные: {g.get('reactivated','—')})")
+        lines.append(f"   └── 🛵 GOJEK: {j.get('new','—') + j.get('active','—') + j.get('returned','—') if all(isinstance(j.get(k), int) for k in ['new','active','returned']) else '—'} (новые: {j.get('new','—')}, активные: {j.get('active','—')}, возвратившиеся: {j.get('returned','—')})")
+        if tot is not None:
+            lines.append(f"   💡 Общий охват: {tot} уникальных клиентов")
+    # Marketing budget
+    mb = es.get('marketing_budget', {})
+    if mb:
+        total_b = mb.get('total') or 0.0
+        lines.append(f"💸 Маркетинговый бюджет: {_fmt_idr(total_b)} ({_fmt_pct(mb.get('share_of_revenue_pct'))} от выручки)")
+        lines.append("📊 Детализация маркетинговых затрат:")
+        lines.append("   ┌─ 📱 GRAB:")
+        lines.append(f"   │  💰 Бюджет: {_fmt_idr(mb.get('grab'))}")
+        # Additional ratios require per-platform revenue; already printed above implicitly; keep budget split concise
+        lines.append("   └─ 🛵 GOJEK:")
+        lines.append(f"      💰 Бюджет: {_fmt_idr(mb.get('gojek'))}")
+    # ROAS summary
+    ro = es.get('roas', {})
+    if ro:
+        lines.append("")
+        lines.append("🎯 ROAS АНАЛИЗ:")
+        lines.append(f"├── 📱 GRAB: {_fmt_rate(ro.get('grab'))}x")
+        lines.append(f"├── 🛵 GOJEK: {_fmt_rate(ro.get('gojek'))}x")
+        lines.append(f"└── 🎯 ОБЩИЙ: {_fmt_rate(ro.get('total'))}x")
     return "\n".join(lines)
 
 

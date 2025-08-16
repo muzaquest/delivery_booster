@@ -558,6 +558,55 @@ def build_basic_report(period: str, restaurant_id: Optional[int]) -> Dict:
     aov_grab = (sales_grab / succ_grab) if succ_grab else None
     aov_gojek = (sales_gojek / succ_gojek) if succ_gojek else None
     aov_total = (total_sales / succ_total) if succ_total else None
+    # Ratings
+    rating_grab = grab_block.get("rating_avg")
+    rating_gojek = gojek_block.get("rating_avg")
+    # Weighted by orders if both available
+    if rating_grab and rating_gojek and (ord_grab + ord_gojek) > 0:
+        rating_total = (float(rating_grab) * ord_grab + float(rating_gojek) * ord_gojek) / (ord_grab + ord_gojek)
+    else:
+        rating_total = float(rating_grab or rating_gojek or 0.0) or None
+    # Clients summary
+    clients_summary = {}
+    try:
+        # GRAB new/repeated/reactivated (ads-based counters)
+        qg = (
+            "SELECT SUM(new_customers) new, SUM(repeated_customers) rep, SUM(reactivated_customers) rea, SUM(total_customers) tot "
+            "FROM grab_stats WHERE stat_date BETWEEN ? AND ?" + (" AND restaurant_id=?" if restaurant_id is not None else "")
+        )
+        params = [str(start), str(end)] + ([restaurant_id] if restaurant_id is not None else [])
+        cg = pd.read_sql_query(qg, eng, params=tuple(params)).iloc[0].fillna(0)
+        # GOJEK new/active/returned
+        qj = (
+            "SELECT SUM(new_client) new, SUM(active_client) act, SUM(returned_client) ret "
+            "FROM gojek_stats WHERE stat_date BETWEEN ? AND ?" + (" AND restaurant_id=?" if restaurant_id is not None else "")
+        )
+        cj = pd.read_sql_query(qj, eng, params=tuple(params)).iloc[0].fillna(0)
+        clients_summary = {
+            "total_unique": int((cg.get('tot') or 0) + (cj.get('new') or 0) + (cj.get('act') or 0) + (cj.get('ret') or 0)),
+            "grab": {
+                "new": int(cg.get('new') or 0),
+                "repeated": int(cg.get('rep') or 0),
+                "reactivated": int(cg.get('rea') or 0),
+                "total": int(cg.get('tot') or 0),
+            },
+            "gojek": {
+                "new": int(cj.get('new') or 0),
+                "active": int(cj.get('act') or 0),
+                "returned": int(cj.get('ret') or 0),
+            }
+        }
+    except Exception:
+        clients_summary = {}
+    # Marketing budgets and ROAS
+    ads_spend_grab = float(pd.to_numeric(grab.get("ads_spend"), errors="coerce").fillna(0).sum()) if not grab.empty else 0.0
+    ads_spend_gojek = float(pd.to_numeric(gojek.get("ads_spend"), errors="coerce").fillna(0).sum()) if not gojek.empty else 0.0
+    ads_sales_grab = float(pd.to_numeric(grab.get("ads_sales"), errors="coerce").fillna(0).sum()) if not grab.empty else 0.0
+    ads_sales_gojek = float(pd.to_numeric(gojek.get("ads_sales"), errors="coerce").fillna(0).sum()) if not gojek.empty else 0.0
+    ads_spend_total = ads_spend_grab + ads_spend_gojek
+    roas_grab = (ads_sales_grab / ads_spend_grab) if ads_spend_grab else None
+    roas_gojek = (ads_sales_gojek / ads_spend_gojek) if ads_spend_gojek else None
+    roas_total = ((ads_sales_grab + ads_sales_gojek) / ads_spend_total) if ads_spend_total else None
 
     # Weekend vs Weekday
     parts = []
@@ -593,6 +642,17 @@ def build_basic_report(period: str, restaurant_id: Optional[int]) -> Dict:
             "successful_orders": {"grab": int(succ_grab), "gojek": int(succ_gojek), "total": int(succ_total)},
             "aov": {"grab": aov_grab, "gojek": aov_gojek, "total": aov_total},
             "daily_revenue_workdays_avg": wd_stats.get("avg_workdays", 0.0),
+            "rating_avg_total": rating_total,
+            "clients": clients_summary,
+            "marketing_budget": {
+                "total": ads_spend_total,
+                "grab": ads_spend_grab,
+                "gojek": ads_spend_gojek,
+                "share_of_revenue_pct": (ads_spend_total/total_sales*100.0) if total_sales else None,
+                "grab_share_pct": (ads_spend_grab/total_sales*100.0) if total_sales else None,
+                "gojek_share_pct": (ads_spend_gojek/total_sales*100.0) if total_sales else None,
+            },
+            "roas": {"grab": roas_grab, "gojek": roas_gojek, "total": roas_total},
             "daily_revenue_all_avg": wd_stats.get("avg_all_days", 0.0),
         },
         "sales_trends": {
