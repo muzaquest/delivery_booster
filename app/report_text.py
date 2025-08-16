@@ -4,6 +4,7 @@ from typing import Optional, Dict
 from datetime import date
 import sqlite3
 import pandas as pd
+import os
 
 from app.report_basic import (
     build_basic_report,
@@ -668,6 +669,121 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
         return "8. 🚨 КРИТИЧЕСКИЕ ДНИ (ML)\n" + ("—" * 72) + "\nНе удалось построить раздел (ошибка обработки данных)."
 
 
+def _section9_external(period: str, restaurant_id: int) -> str:
+    try:
+        start_str, end_str = period.split("_")
+        df = pd.read_csv("/workspace/data/merged_dataset.csv", parse_dates=["date"]) if os.path.exists("/workspace/data/merged_dataset.csv") else pd.DataFrame()
+        sub = df[(df.get("restaurant_id") == restaurant_id) & (df.get("date") >= start_str) & (df.get("date") <= end_str)].copy() if not df.empty else pd.DataFrame()
+        lines = []
+        lines.append("9. 🌍 ВНЕШНИЕ ФАКТОРЫ (ПОГОДА, ПРАЗДНИКИ, ТУРИЗМ)")
+        lines.append("—" * 72)
+        if sub.empty:
+            lines.append("Нет данных по внешним факторам за период.")
+            return "\n".join(lines)
+
+        # Weather summary
+        r = pd.to_numeric(sub.get('rain'), errors='coerce')
+        t = pd.to_numeric(sub.get('temp'), errors='coerce')
+        heavy_days = int(((r.fillna(0.0) >= 10.0).sum())) if 'rain' in sub.columns else 0
+        lines.append("Погода:")
+        lines.append(f"  • Дней с сильным дождём (≥10 мм): {heavy_days}")
+        lines.append(f"  • Средняя температура: {_fmt_rate(float(t.mean()) if t.notna().any() else None)} °C")
+        lines.append(f"  • Средние осадки: {_fmt_rate(float(r.mean()) if r.notna().any() else None)} мм")
+
+        # Holidays
+        is_h = sub.get('is_holiday')
+        if is_h is not None:
+            hol_days = int(pd.to_numeric(is_h, errors='coerce').fillna(0).astype(int).sum())
+        else:
+            hol_days = 0
+        lines.append("Праздники:")
+        lines.append(f"  • Дней с праздниками: {hol_days}")
+        lines.append("  • Источники: Nager.Date + локальные балийские (кеш)")
+
+        # Tourism index (if present)
+        tf = pd.to_numeric(sub.get('tourist_flow'), errors='coerce') if 'tourist_flow' in sub.columns else None
+        if tf is not None and tf.notna().any():
+            lines.append("Туризм:")
+            lines.append(f"  • Средний индекс турпотока: {_fmt_rate(float(tf.mean()))}")
+            lines.append(f"  • Тренд (последние 14 дней): {_fmt_rate(float(tf.tail(14).mean()) - float(tf.head(14).mean()))}")
+        return "\n".join(lines)
+    except Exception:
+        return "9. 🌍 ВНЕШНИЕ ФАКТОРЫ\n" + ("—" * 72) + "\nНе удалось собрать сводку."
+
+
+def _section10_recommendations(period: str, restaurant_id: int) -> str:
+    try:
+        # Use SHAP over the whole period to prioritize levers; exclude trivial features
+        start_str, end_str = period.split("_")
+        df = pd.read_csv("/workspace/data/merged_dataset.csv", parse_dates=["date"]) if os.path.exists("/workspace/data/merged_dataset.csv") else pd.DataFrame()
+        sub = df[(df.get("restaurant_id") == restaurant_id) & (df.get("date") >= start_str) & (df.get("date") <= end_str)].copy() if not df.empty else pd.DataFrame()
+        lines = []
+        lines.append("10. 🎯 СТРАТЕГИЧЕСКИЕ РЕКОМЕНДАЦИИ")
+        lines.append("—" * 72)
+        if sub.empty:
+            lines.append("Нет данных за период.")
+            return "\n".join(lines)
+
+        # Load model and compute feature importances
+        model, features, background = load_artifacts("/workspace/ml/artifacts")
+        X = sub[features]
+        pre = model.named_steps["pre"]
+        mdl = model.named_steps["model"]
+        X_pre = pre.transform(X)
+        try:
+            if background is not None and not background.empty:
+                bg_pre = pre.transform(background[features])
+                explainer = shap.TreeExplainer(mdl, data=bg_pre, feature_perturbation="interventional")
+            else:
+                explainer = shap.TreeExplainer(mdl, feature_perturbation="interventional")
+            shap_values = explainer.shap_values(X_pre)
+        except Exception:
+            explainer = shap.TreeExplainer(mdl)
+            shap_values = explainer.shap_values(X_pre)
+        _, groups = _resolve_preprocessed_feature_groups(pre)
+        import re as _re
+        pat = [_re.compile(r"^orders_count(?!.*conversion).*"), _re.compile(r"^total_sales.*"), _re.compile(r"^restaurant_id$")]
+        def is_excl(n: str) -> bool:
+            return any(p.search(n) for p in pat)
+        abs_sv = np.abs(shap_values)
+        agg: Dict[str, float] = {}
+        for feat, idxs in groups.items():
+            if is_excl(feat) or not idxs:
+                continue
+            agg[feat] = float(abs_sv[:, idxs].mean())
+        top = sorted(agg.items(), key=lambda x: x[1], reverse=True)[:8]
+
+        # Group by categories
+        cats: Dict[str, float] = {}
+        for f, v in agg.items():
+            c = _categorize_feature(f)
+            cats[c] = cats.get(c, 0.0) + v
+        tot = sum(cats.values()) or 1.0
+        for k in list(cats.keys()):
+            cats[k] = round(100.0 * cats[k] / tot, 1)
+
+        lines.append("Приоритеты по факторам (ML):")
+        for f, v in top:
+            lines.append(f"  • [{_categorize_feature(f)}] {f}")
+        lines.append("")
+        lines.append("Вклад групп факторов:")
+        for k in ["Operations", "Marketing", "External", "Quality", "Other"]:
+            if k in cats:
+                lines.append(f"  • {k}: {cats[k]}%")
+        lines.append("")
+        lines.append("Рекомендуемые действия:")
+        if cats.get("Operations", 0) >= 30.0:
+            lines.append("  • Сократить SLA (prep/accept/delivery) в пиковые окна; предзаготовки, слотирование, контроль выдачи")
+        if cats.get("Marketing", 0) >= 20.0:
+            lines.append("  • Перераспределить бюджет в связки с лучшим ROAS; тест креативов и аудиторий; корректировка ставок")
+        lines.append("  • Погодные промо и бонусы курьерам в дождь; перенос активностей на «сухие» окна")
+        lines.append("  • Учитывать локальные праздники в планировании (снижение бюджета/акции на следующий день)")
+        lines.append("  • Контроль качества и рейтингов: работа с негативом, улучшение времени ожидания")
+        return "\n".join(lines)
+    except Exception:
+        return "10. 🎯 СТРАТЕГИЧЕСКИЕ РЕКОМЕНДАЦИИ\n" + ("—" * 72) + "\nНе удалось построить рекомендации."
+
+
 def generate_full_report(period: str, restaurant_id: int) -> str:
     basic = build_basic_report(period, restaurant_id)
     marketing = build_marketing_report(period, restaurant_id)
@@ -699,5 +815,11 @@ def generate_full_report(period: str, restaurant_id: int) -> str:
     parts.append("")
     # Section 8 (ML Critical Days)
     parts.append(_section8_critical_days_ml(period, restaurant_id))
+    parts.append("")
+    # Section 9 (External factors)
+    parts.append(_section9_external(period, restaurant_id))
+    parts.append("")
+    # Section 10 (Recommendations)
+    parts.append(_section10_recommendations(period, restaurant_id))
     parts.append("")
     return "\n".join(parts)
