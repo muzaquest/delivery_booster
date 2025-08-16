@@ -16,6 +16,7 @@ import numpy as np
 import re
 from ml.inference import load_artifacts, _resolve_preprocessed_feature_groups
 import shap
+import json
 
 
 def _fmt_idr(x: Optional[float]) -> str:
@@ -61,15 +62,41 @@ def _section1_exec(basic: Dict) -> str:
     gojek_rev = _fmt_idr(gojek.get("sales"))
 
     total_orders = es.get("orders_total") or 0
+    # Optional enriched fields
+    fake = es.get("fake_orders", {})
+    canc = es.get("cancellations", {})
+    lost = es.get("lost_orders", {})
+    succ = es.get("successful_orders", {})
+    aov = es.get("aov", {})
 
     lines = []
     lines.append("📊 1. ИСПОЛНИТЕЛЬНОЕ РЕЗЮМЕ")
     lines.append("—" * 72)
     lines.append(f"💰 Общая выручка: {total_rev} (GRAB: {grab_rev} + GOJEK: {gojek_rev})")
     lines.append(f"📦 Общие заказы: {total_orders}")
-    lines.append(f"   ├── 📱 GRAB: {int(grab.get('orders') or 0)}")
-    lines.append(f"   └── 🛵 GOJEK: {int(gojek.get('orders') or 0)}")
+    lines.append(f"   ├── 📱 GRAB: {int(grab.get('orders') or 0)} (успешно: {succ.get('grab','—')}, отмены: {canc.get('grab','—')}, потери: {lost.get('grab','—')}, fake: {fake.get('grab','—')})")
+    lines.append(f"   └── 🛵 GOJEK: {int(gojek.get('orders') or 0)} (успешно: {succ.get('gojek','—')}, отмены: {canc.get('gojek','—')}, потери: {lost.get('gojek','—')}, fake: {fake.get('gojek','—')})")
+    # AOVs
+    if aov:
+        lines.append(f"💵 Средний чек (успешные): общий { _fmt_idr(aov.get('total')) }; GRAB { _fmt_idr(aov.get('grab')) }; GOJEK { _fmt_idr(aov.get('gojek')) }")
     return "\n".join(lines)
+
+
+def _dataset_version_banner() -> str:
+    try:
+        metrics_path = "/workspace/ml/artifacts/metrics.json"
+        if not os.path.exists(metrics_path):
+            return ""
+        with open(metrics_path, "r", encoding="utf-8") as f:
+            m = json.load(f)
+        h = str(m.get("dataset_hash",""))
+        rows = m.get("dataset_rows")
+        ts = m.get("run_at_utc")
+        champ = m.get("champion")
+        short = h[:10] if h else ""
+        return f"Версия датасета: {short} · строк: {rows} · тренировался: {ts} · модель: {champ}"
+    except Exception:
+        return ""
 
 
 def _section2_trends(basic: Dict) -> str:
@@ -749,6 +776,11 @@ def generate_full_report(period: str, restaurant_id: int) -> str:
     finance = basic.get("finance") if isinstance(basic, dict) else None
 
     parts = []
+    # Dataset version banner
+    banner = _dataset_version_banner()
+    if banner:
+        parts.append(banner)
+        parts.append("")
     # Section 1
     parts.append(_section1_exec(basic))
     parts.append("")
