@@ -779,6 +779,7 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
             is_hol = int(row.get("is_holiday")) if pd.notna(row.get("is_holiday")) else 0
             total_sales_day = float(daily.loc[daily["date"] == d, "total_sales"].iloc[0])
             delta_pct = ((total_sales_day - med) / med * 100.0) if med else None
+            delta_idr = max(med - total_sales_day, 0.0) if med else 0.0
 
             lines.append(f"📉 КРИТИЧЕСКИЙ ДЕНЬ: {ds} (выручка: {_fmt_idr(total_sales_day)}; отклонение к медиане: {_fmt_pct(delta_pct)})")
             lines.append("—" * 72)
@@ -1004,6 +1005,8 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
                 lines.append(f"🟢 Дополнительно — исключить оффлайн на платформах: ≈ {_fmt_idr(uplift_off)} ({conf_off})")
                 lines.append("")
                 lines.append(f"💰 Потенциал восстановления: ~{_fmt_idr(uplift)}")
+                lines.append(f"💰 Потенциал восстановления: {_fmt_idr(min_pot)} — {_fmt_idr(max_pot)} (база: {_fmt_idr(base_pot)})")
+                lines.append(f"📈 Прогноз восстановления (7 дней): {_fmt_idr(min_pot*7)} — {_fmt_idr(max_pot*7)}")
             except Exception:
                 pass
             lines.append("")
