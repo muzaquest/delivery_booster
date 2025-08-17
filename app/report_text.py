@@ -785,7 +785,11 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
             # Compute business-oriented factor sets (threshold 3%)
             def _share(v: float) -> float:
                 return round(100.0 * abs(v) / total_abs, 1)
-            sig = [(f, v, _share(v)) for f, v in selected if _share(v) >= 3.0]
+            def _is_technical(name: str) -> bool:
+                n = name.lower()
+                return ('lag' in n) or ('rolling' in n)
+            sig_all = [(f, v, _share(v)) for f, v in selected if _share(v) >= 3.0]
+            sig = [(f, v, s) for f, v, s in sig_all if not _is_technical(f)] or sig_all
             neg = [(f, v, s) for f, v, s in sig if v < 0]
             pos = [(f, v, s) for f, v, s in sig if v > 0]
             neg = sorted(neg, key=lambda x: x[2], reverse=True)[:5]
