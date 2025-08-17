@@ -897,11 +897,25 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
 
             # Factors tables (negatives first)
             if 'factor_rows_neg' in locals() and factor_rows_neg:
-                lines.append("Негативные факторы (ТОП‑5):")
+                lines.append("Негативные факторы (основные):")
                 lines.append("| Фактор | Вклад | Комментарий |")
                 lines.append("|---|---:|---|")
-                for f, s, money in sorted(factor_rows_neg, key=lambda x: (x[2], x[1]), reverse=True)[:5]:
+                for f, s, money in sorted(factor_rows_neg, key=lambda x: (x[2], x[1]), reverse=True)[:10]:
                     lines.append(f"| {_pretty_feature_name(f)} | −{_fmt_idr(money)} ({s}%) | {_comment_for(f, False)} |")
+                # Grouped diagnostics by category (top 2–3 per category, ≥2%)
+                cat_rows = {}
+                for f, s, money in factor_rows_neg:
+                    cat = _categorize_feature(f)
+                    cat_rows.setdefault(cat, []).append((f, s, money))
+                lines.append("")
+                lines.append("Диагностика факторов (по группам):")
+                for cat in ["Marketing", "Operations", "External"]:
+                    rows = sorted(cat_rows.get(cat, []), key=lambda x: (x[2], x[1]), reverse=True)
+                    rows = [r for r in rows if r[1] >= 2.0][:3]
+                    if rows:
+                        lines.append(f"  • {cat}:")
+                        for f, s, money in rows:
+                            lines.append(f"    - {_pretty_feature_name(f)}: −{_fmt_idr(money)} ({s}%)")
                 lines.append("")
             if pos:
                 lines.append("Что помогло (до 2 факторов):")
