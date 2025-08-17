@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional, Dict
+from typing import Optional, Dict, Tuple
 from datetime import date
 import sqlite3
 import pandas as pd
@@ -864,20 +864,52 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
                 lines.append(f"- Погода: дождь {rain} мм снизил готовность заказывать.")
             lines.append("")
 
-            # Factors tables (negatives first)
-            if neg:
-                lines.append("Негативные факторы (ТОП‑5):")
-                lines.append("| Фактор | Влияние | Комментарий |")
-                lines.append("|---|---:|---|")
-                for f, v, s in neg:
-                    lines.append(f"| {_pretty_feature_name(f)} | {s}% | {_comment_for(f, False)} |")
+            # Build category representatives (one per category) with priority/confidence and mini-bars
+            def _priority(share: float) -> str:
+                return "🔴 критично" if share >= 15.0 else ("🟠 важно" if share >= 7.0 else "🟢 второстепенно")
+            def _confidence(share: float) -> str:
+                return "High" if share >= 15.0 else ("Medium" if share >= 8.0 else "Low")
+            def _mini_bar(share: float) -> str:
+                n = max(1, min(10, int(round(share / 5.0))))
+                return "█" * n
+            # pick best negative per category
+            cat_best: Dict[str, Tuple[str, float, float]] = {}
+            for f, v, s in neg:
+                cat = _categorize_feature(f)
+                if cat not in cat_best or s > cat_best[cat][2]:
+                    cat_best[cat] = (f, v, s)
+            # Narrative (1–2 sentences)
+            if cat_best:
+                top_cats = sorted(cat_best.items(), key=lambda x: x[1][2], reverse=True)
+                cat_names = [c for c, _ in top_cats[:2]]
+                cat_map = {"Marketing": "реклама", "Operations": "операции на кухне/доставке", "External": "внешние условия (погода/календарь)", "Quality": "качество сервиса"}
+                main1 = cat_map.get(cat_names[0], cat_names[0]) if len(cat_names) > 0 else ""
+                main2 = cat_map.get(cat_names[1], cat_names[1]) if len(cat_names) > 1 else ""
+                if main2:
+                    lines.append(f"Этот день провалился из‑за сочетания {main1} и {main2}.")
+                else:
+                    lines.append(f"Основная причина просадки — {main1}.")
                 lines.append("")
+
+            # Category table (negatives)
+            if cat_best:
+                lines.append("ТОП‑факторы (по категориям):")
+                lines.append("| Категория | Показатель | Влияние | Приоритет | Комментарий |")
+                lines.append("|---|---|---:|---|---|")
+                for cat, (f, v, s) in sorted(cat_best.items(), key=lambda x: x[1][2], reverse=True):
+                    pr = _priority(s)
+                    arrow = "▼"
+                    bar = _mini_bar(s)
+                    lines.append(f"| {cat} | {_pretty_feature_name(f)} | {arrow} {s}% {bar} | {pr} | {_comment_for(f, False)} |")
+                lines.append("")
+
+            # Positives table (up to 2)
             if pos:
                 lines.append("Что помогло (до 2 факторов):")
-                lines.append("| Фактор | Влияние | Комментарий |")
-                lines.append("|---|---:|---|")
+                lines.append("| Категория | Показатель | Влияние | Комментарий |")
+                lines.append("|---|---|---:|---|")
                 for f, v, s in pos:
-                    lines.append(f"| {_pretty_feature_name(f)} | {s}% | {_comment_for(f, True)} |")
+                    lines.append(f"| {_categorize_feature(f)} | {_pretty_feature_name(f)} | ▲ {s}% {_mini_bar(s)} | {_comment_for(f, True)} |")
                 lines.append("")
 
             lines.append("📊 Вклад групп факторов:")
@@ -921,63 +953,7 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
             lines.append(f"  • 🎌 Праздник: {'да' if is_hol else 'нет'}")
             lines.append("")
 
-            # Human-friendly explanations with evidence
-            try:
-                lines.append("🧠 Пояснение простыми словами:")
-                # Marketing evidence
-                if not qg.empty:
-                    gs = qg.iloc[0]
-                    day_spend_g = float(gs.get('ads_spend')) if pd.notna(gs.get('ads_spend')) else None
-                    day_roas_g = (float(gs.get('ads_sales')) / float(gs.get('ads_spend'))) if (pd.notna(gs.get('ads_spend')) and float(gs.get('ads_spend'))>0) else None
-                    if day_roas_g is not None and roas_g_avg is not None:
-                        diff = (day_roas_g - roas_g_avg) / (roas_g_avg or 1.0) * 100.0
-                        lines.append(f"  • Реклама GRAB отработала слабее обычного: ROAS {day_roas_g:.2f}x против среднего {roas_g_avg:.2f}x ({diff:+.0f}%).")
-                    if day_spend_g is not None and spend_g_avg is not None:
-                        diff = (day_spend_g - spend_g_avg) / (spend_g_avg or 1.0) * 100.0
-                        lines.append(f"  • Бюджет GRAB {('ниже' if diff<0 else 'выше')} среднего: {_fmt_idr(day_spend_g)} vs {_fmt_idr(spend_g_avg)} ({diff:+.0f}%).")
-                if not qj.empty:
-                    js = qj.iloc[0]
-                    day_spend_j = float(js.get('ads_spend')) if pd.notna(js.get('ads_spend')) else None
-                    day_roas_j = (float(js.get('ads_sales')) / float(js.get('ads_spend'))) if (pd.notna(js.get('ads_spend')) and float(js.get('ads_spend'))>0) else None
-                    if day_roas_j is not None and roas_j_avg is not None:
-                        diff = (day_roas_j - roas_j_avg) / (roas_j_avg or 1.0) * 100.0
-                        lines.append(f"  • На GOJEK отдача рекламы тоже слабее: ROAS {day_roas_j:.2f}x против {roas_j_avg:.2f}x ({diff:+.0f}%).")
-                    if day_spend_j is not None and spend_j_avg is not None:
-                        diff = (day_spend_j - spend_j_avg) / (spend_j_avg or 1.0) * 100.0
-                        lines.append(f"  • Бюджет GOJEK {('ниже' if diff<0 else 'выше')} среднего: {_fmt_idr(day_spend_j)} vs {_fmt_idr(spend_j_avg)} ({diff:+.0f}%).")
-                # Operations evidence
-                if not qj.empty:
-                    js = qj.iloc[0]
-                    d_prep = _to_min_p(js.get('preparation_time'))
-                    d_acc = _to_min_p(js.get('accepting_time'))
-                    d_del = _to_min_p(js.get('delivery_time'))
-                    if d_prep is not None and prep_avg is not None:
-                        diff = (d_prep - prep_avg) / (prep_avg or 1.0) * 100.0
-                        lines.append(f"  • Время приготовления {d_prep:.1f} мин против среднего {prep_avg:.1f} мин ({diff:+.0f}%).")
-                    if d_acc is not None and accept_avg is not None:
-                        diff = (d_acc - accept_avg) / (accept_avg or 1.0) * 100.0
-                        lines.append(f"  • Время подтверждения {d_acc:.1f} мин против {accept_avg:.1f} мин ({diff:+.0f}%).")
-                    if d_del is not None and deliv_avg is not None:
-                        diff = (d_del - deliv_avg) / (deliv_avg or 1.0) * 100.0
-                        lines.append(f"  • Доставка {d_del:.1f} мин против {deliv_avg:.1f} мин ({diff:+.0f}%).")
-                # Availability evidence
-                if grab_off_mins is not None and off_g_avg is not None:
-                    diff = (grab_off_mins - off_g_avg) / (off_g_avg or 1.0) * 100.0
-                    lines.append(f"  • Оффлайн GRAB: {_fmt_minutes_to_hhmmss(grab_off_mins)} против среднего {_fmt_minutes_to_hhmmss(off_g_avg)} ({diff:+.0f}%).")
-                # Cancellations
-                if not qg.empty and canc_g_avg is not None:
-                    c = qg.iloc[0].get('cancelled_orders')
-                    if pd.notna(c):
-                        diff = (float(c) - canc_g_avg) / (canc_g_avg or 1.0) * 100.0 if canc_g_avg else 0.0
-                        lines.append(f"  • Отмены GRAB: {int(float(c))} против среднего {int(round(canc_g_avg))} ({diff:+.0f}%).")
-                if not qj.empty and canc_j_avg is not None:
-                    c = qj.iloc[0].get('cancelled_orders')
-                    if pd.notna(c):
-                        diff = (float(c) - canc_j_avg) / (canc_j_avg or 1.0) * 100.0 if canc_j_avg else 0.0
-                        lines.append(f"  • Отмены GOJEK: {int(float(c))} против среднего {int(round(canc_j_avg))} ({diff:+.0f}%).")
-                lines.append("")
-            except Exception:
-                pass
+            # Evidence lines are summarized in tables/comments; skip verbose protocol
 
             # What-if: отдельные рычаги и комбинированный сценарий
             try:
@@ -1016,27 +992,32 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
                         x_off.loc[x_off.index[0], col] = 0.0
                 uplift_off = float(model.predict(x_off)[0] - base_pred)
 
+                # Confidence per lever
+                cat_contribs = {k: group_shares.get(k, 0.0) for k in ["Marketing", "Operations", "External"]}
+                conf_mark = _confidence(cat_contribs.get("Marketing", 0.0))
+                conf_ops = _confidence(cat_contribs.get("Operations", 0.0))
+                conf_off = _confidence(10.0 if (grab_off_mins and grab_off_mins > 0) else 0.0)
                 lines.append("Рекомендации (рычаги и эффект):")
-                lines.append(f"- Сократить SLA (−10% к приготовлению/подтверждению/доставке): ≈ {_fmt_idr(uplift_sla)}")
-                lines.append(f"- Увеличить рекламный бюджет на 10% в работающих связках: ≈ {_fmt_idr(uplift_bud)}")
-                lines.append(f"- Исключить оффлайн на платформах: ≈ {_fmt_idr(uplift_off)}")
+                lines.append(f"- Увеличить бюджет на работающие кампании (+10%): ≈ {_fmt_idr(uplift_bud)} ({_fmt_idr(uplift_bud)}) ✅ {conf_mark}")
+                lines.append(f"- Сократить SLA (−10% к приготовлению/подтверждению/доставке): ≈ {_fmt_idr(uplift_sla)} ({_fmt_idr(uplift_sla)}) 🟠 {conf_ops}")
+                lines.append(f"- Исключить оффлайн на платформах: ≈ {_fmt_idr(uplift_off)} ({_fmt_idr(uplift_off)}) 🟢 {conf_off}")
                 lines.append("")
-                lines.append(f"🔮 Комбинация рычагов: ожидаемый прирост ~{_fmt_idr(uplift)}")
+                lines.append(f"💰 Потенциал восстановления: ≈ +{_fmt_idr(uplift)} ({_fmt_idr(uplift)})")
             except Exception:
                 pass
             lines.append("")
 
         # Диагностика периода: простые оценки эффекта дождя и праздников
-        lines.append("Диагностика факторов за период:")
+        lines.append("Справка по периоду:")
         sub['heavy_rain'] = (sub['rain'].fillna(0.0) >= 10.0).astype(int)
         by_rain = sub.groupby('heavy_rain')['total_sales'].mean().to_dict()
         if 0 in by_rain:
             dr = (by_rain.get(1, by_rain[0]) - by_rain[0]) / (by_rain[0] or 1.0) * 100.0
-            lines.append(f"  • 🌧️ Дождь (простая разница средних): {_fmt_pct(dr)}")
+            lines.append(f"  • 🌧️ Дождь: {_fmt_pct(dr)}")
         by_h = sub.groupby(sub['is_holiday'].fillna(0).astype(int))['total_sales'].mean().to_dict()
         if 0 in by_h:
             dh = (by_h.get(1, by_h[0]) - by_h[0]) / (by_h[0] or 1.0) * 100.0
-            lines.append(f"  • 🎌 Праздники (простая разница средних): {_fmt_pct(dh)}")
+            lines.append(f"  • 🎌 Праздники: {_fmt_pct(dh)}")
         lines.append("")
         lines.append("Источники: SQLite (grab_stats, gojek_stats), Open‑Meteo, Holidays cache")
         return "\n".join(lines)
