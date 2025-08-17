@@ -782,14 +782,100 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
 
             lines.append(f"📉 КРИТИЧЕСКИЙ ДЕНЬ: {ds} (выручка: {_fmt_idr(total_sales_day)}; отклонение к медиане: {_fmt_pct(delta_pct)})")
             lines.append("—" * 72)
-            # Factors table (concise)
-            lines.append("🔎 Факторы, повлиявшие на результат (ML):")
-            for feat, val in selected:
-                cat = _categorize_feature(feat)
-                direction = "↑" if val > 0 else "↓"
-                share = round(100.0 * abs(val) / total_abs, 1)
-                lines.append(f"  • [{cat}] {_pretty_feature_name(feat)}: {direction} вклад ~{_fmt_idr(abs(val))} ({share}%)")
+            # Compute business-oriented factor sets (threshold 3%)
+            def _share(v: float) -> float:
+                return round(100.0 * abs(v) / total_abs, 1)
+            sig = [(f, v, _share(v)) for f, v in selected if _share(v) >= 3.0]
+            neg = [(f, v, s) for f, v, s in sig if v < 0]
+            pos = [(f, v, s) for f, v, s in sig if v > 0]
+            neg = sorted(neg, key=lambda x: x[2], reverse=True)[:5]
+            pos = sorted(pos, key=lambda x: x[2], reverse=True)[:2]
+
+            # Day-level metrics snapshot for comments
+            # Build baselines already computed above: roas_g_avg, roas_j_avg, prep/accept/deliv avg, etc.
+            day_roas_g = None; day_roas_j = None; day_spend_g = None; day_spend_j = None
+            if not qg.empty:
+                gs = qg.iloc[0]
+                day_spend_g = float(gs.get('ads_spend')) if pd.notna(gs.get('ads_spend')) else None
+                day_roas_g = (float(gs.get('ads_sales')) / float(gs.get('ads_spend'))) if (pd.notna(gs.get('ads_spend')) and float(gs.get('ads_spend'))>0) else None
+            if not qj.empty:
+                js = qj.iloc[0]
+                day_spend_j = float(js.get('ads_spend')) if pd.notna(js.get('ads_spend')) else None
+                day_roas_j = (float(js.get('ads_sales')) / float(js.get('ads_spend'))) if (pd.notna(js.get('ads_spend')) and float(js.get('ads_spend'))>0) else None
+            d_prep = _to_min_p(qj.iloc[0].get('preparation_time')) if not qj.empty else None
+            d_acc = _to_min_p(qj.iloc[0].get('accepting_time')) if not qj.empty else None
+            d_del = _to_min_p(qj.iloc[0].get('delivery_time')) if not qj.empty else None
+
+            def _comment_for(feat_name: str, is_positive: bool) -> str:
+                n = feat_name.lower()
+                # Marketing
+                if 'roas' in n:
+                    # choose platform
+                    if 'grab' in n and day_roas_g is not None and roas_g_avg is not None:
+                        return f"реклама GRAB {'эффективна' if is_positive else 'неэффективна'} ({day_roas_g:.2f}x vs {roas_g_avg:.2f}x)"
+                    if 'gojek' in n and day_roas_j is not None and roas_j_avg is not None:
+                        return f"реклама GOJEK {'эффективна' if is_positive else 'неэффективна'} ({day_roas_j:.2f}x vs {roas_j_avg:.2f}x)"
+                    return "рекламная эффективность ниже нормы" if not is_positive else "рекламная эффективность выше нормы"
+                if 'ads_spend' in n or 'budget' in n:
+                    if 'grab' in n and day_spend_g is not None and spend_g_avg is not None:
+                        return f"бюджет GRAB {'выше' if is_positive else 'ниже'} среднего ({_fmt_idr(day_spend_g)} vs {_fmt_idr(spend_g_avg)})"
+                    if 'gojek' in n and day_spend_j is not None and spend_j_avg is not None:
+                        return f"бюджет GOJEK {'выше' if is_positive else 'ниже'} среднего ({_fmt_idr(day_spend_j)} vs {_fmt_idr(spend_j_avg)})"
+                    return "изменение рекламной активности"
+                # Operations
+                if 'preparation_time' in n:
+                    if d_prep is not None and prep_avg is not None:
+                        return f"время приготовления {'ниже' if is_positive else 'выше'} нормы ({d_prep:.1f} vs {prep_avg:.1f} мин)"
+                    return "скорость приготовления"
+                if 'accepting_time' in n:
+                    if d_acc is not None and accept_avg is not None:
+                        return f"подтверждение {'быстрее' if is_positive else 'дольше'} обычного ({d_acc:.1f} vs {accept_avg:.1f} мин)"
+                    return "скорость подтверждения"
+                if 'delivery_time' in n:
+                    if d_del is not None and deliv_avg is not None:
+                        return f"доставка {'быстрее' if is_positive else 'дольше'} обычного ({d_del:.1f} vs {deliv_avg:.1f} мин)"
+                    return "скорость доставки"
+                if 'offline' in n or 'outage' in n:
+                    return "платформа была недоступна (оффлайн)"
+                # External
+                if 'rain' in n:
+                    return "дождь снизил спрос" if not is_positive else "погода благоприятна"
+                if 'day_of_week' in n or 'weekend' in n:
+                    return "слабый день недели" if not is_positive else "сильный день недели"
+                if 'humidity' in n or 'wind' in n or 'temp' in n:
+                    return "погодные условия снизили спрос" if not is_positive else "погодные условия помогли"
+                if 'rating' in n:
+                    return "рейтинг повлиял на спрос"
+                return "влияющий фактор периода"
+
+            # Short summary (business-oriented)
+            lines.append("Краткое резюме:")
+            lines.append(f"- Продажи ниже медианы на {_fmt_pct(delta_pct)}.")
+            if neg:
+                topn = ", ".join([_pretty_feature_name(f) for f, _, _ in neg[:2]])
+                lines.append(f"- Главные причины: {topn}.")
+            if grab_off_mins and grab_off_mins > 0:
+                lines.append(f"- Доступность: оффлайн GRAB {_fmt_minutes_to_hhmmss(grab_off_mins)}.")
+            if rain and rain > 0:
+                lines.append(f"- Погода: дождь {rain} мм снизил готовность заказывать.")
             lines.append("")
+
+            # Factors tables (negatives first)
+            if neg:
+                lines.append("Негативные факторы (ТОП‑5):")
+                lines.append("| Фактор | Влияние | Комментарий |")
+                lines.append("|---|---:|---|")
+                for f, v, s in neg:
+                    lines.append(f"| {_pretty_feature_name(f)} | {s}% | {_comment_for(f, False)} |")
+                lines.append("")
+            if pos:
+                lines.append("Что помогло (до 2 факторов):")
+                lines.append("| Фактор | Влияние | Комментарий |")
+                lines.append("|---|---:|---|")
+                for f, v, s in pos:
+                    lines.append(f"| {_pretty_feature_name(f)} | {s}% | {_comment_for(f, True)} |")
+                lines.append("")
+
             lines.append("📊 Вклад групп факторов:")
             for cat in ["Operations", "Marketing", "External", "Quality", "Other"]:
                 if cat in group_shares:
@@ -889,7 +975,7 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
             except Exception:
                 pass
 
-            # What-if: улучшение SLA и маркетинга, снятие оффлайна
+            # What-if: отдельные рычаги и комбинированный сценарий
             try:
                 row_idx = idxs[0]
                 xrow = X.iloc[[row_idx]].copy(deep=True)
@@ -901,7 +987,37 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
                 if "ads_spend_total" in xrow.columns and pd.notna(xrow.iloc[0]["ads_spend_total"]):
                     xrow.loc[xrow.index[0], "ads_spend_total"] = float(xrow.iloc[0]["ads_spend_total"]) * 1.1
                 uplift = float(model.predict(xrow)[0] - model.predict(X.iloc[[row_idx]])[0])
-                lines.append(f"🔮 What‑if (−10% SLA, +10% бюджет, без оффлайна): ожидаемый прирост ~{_fmt_idr(uplift)}")
+                # Individual levers
+                base_pred = float(model.predict(X.iloc[[row_idx]])[0])
+                # SLA only
+                x_sla = X.iloc[[row_idx]].copy(deep=True)
+                for col in ["preparation_time_mean", "accepting_time_mean", "delivery_time_mean"]:
+                    if col in x_sla.columns and pd.notna(x_sla.iloc[0][col]):
+                        x_sla.loc[x_sla.index[0], col] = max(0.0, float(x_sla.iloc[0][col]) * 0.9)
+                uplift_sla = float(model.predict(x_sla)[0] - base_pred)
+                # Budget only
+                x_bud = X.iloc[[row_idx]].copy(deep=True)
+                if "ads_spend_total" in x_bud.columns and pd.notna(x_bud.iloc[0].get("ads_spend_total")):
+                    x_bud.loc[x_bud.index[0], "ads_spend_total"] = float(x_bud.iloc[0]["ads_spend_total"]) * 1.1
+                else:
+                    if "mkt_ads_spend_grab" in x_bud.columns and pd.notna(x_bud.iloc[0].get("mkt_ads_spend_grab")):
+                        x_bud.loc[x_bud.index[0], "mkt_ads_spend_grab"] = float(x_bud.iloc[0]["mkt_ads_spend_grab"]) * 1.1
+                    if "mkt_ads_spend_gojek" in x_bud.columns and pd.notna(x_bud.iloc[0].get("mkt_ads_spend_gojek")):
+                        x_bud.loc[x_bud.index[0], "mkt_ads_spend_gojek"] = float(x_bud.iloc[0]["mkt_ads_spend_gojek"]) * 1.1
+                uplift_bud = float(model.predict(x_bud)[0] - base_pred)
+                # Offline only
+                x_off = X.iloc[[row_idx]].copy(deep=True)
+                for col in ["outage_offline_rate_grab", "offline_rate_grab"]:
+                    if col in x_off.columns and pd.notna(x_off.iloc[0].get(col)):
+                        x_off.loc[x_off.index[0], col] = 0.0
+                uplift_off = float(model.predict(x_off)[0] - base_pred)
+
+                lines.append("Рекомендации (рычаги и эффект):")
+                lines.append(f"- Сократить SLA (−10% к приготовлению/подтверждению/доставке): ≈ {_fmt_idr(uplift_sla)}")
+                lines.append(f"- Увеличить рекламный бюджет на 10% в работающих связках: ≈ {_fmt_idr(uplift_bud)}")
+                lines.append(f"- Исключить оффлайн на платформах: ≈ {_fmt_idr(uplift_off)}")
+                lines.append("")
+                lines.append(f"🔮 Комбинация рычагов: ожидаемый прирост ~{_fmt_idr(uplift)}")
             except Exception:
                 pass
             lines.append("")
