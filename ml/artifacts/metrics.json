@@ -1,0 +1,17 @@
+{
+  "lightgbm": {
+    "model": "lightgbm",
+    "mae": 218126.3948397374,
+    "r2": 0.8844116619723525,
+    "n_train": 12089,
+    "n_valid": 1344
+  },
+  "random_forest": {
+    "model": "random_forest",
+    "mae": 217117.15542796493,
+    "r2": 0.8975389794359038,
+    "n_train": 12089,
+    "n_valid": 1344
+  },
+  "champion": "random_forest"
+}

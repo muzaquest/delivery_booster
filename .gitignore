@@ -4,7 +4,12 @@ __pycache__/
 data/*.csv
 logs/
 ml/artifacts/
+!ml/
+!ml/artifacts/
+!ml/artifacts/*.json
+!ml/artifacts/*.csv
 database.sqlite
 *.joblib
 *.parquet
+*.pkl
 .env
