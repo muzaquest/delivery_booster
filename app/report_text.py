@@ -648,6 +648,69 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
             return any(p.search(n) for p in pat)
 
         eng = get_engine()
+        # Period baselines (для человеческих объяснений)
+        qg_all = pd.read_sql_query(
+            "SELECT stat_date, ads_spend, ads_sales, cancelled_orders, offline_rate FROM grab_stats WHERE restaurant_id=? AND stat_date BETWEEN ? AND ?",
+            eng, params=(restaurant_id, start_str, end_str)
+        )
+        qj_all = pd.read_sql_query(
+            "SELECT stat_date, ads_spend, ads_sales, accepting_time, preparation_time, delivery_time, close_time, cancelled_orders FROM gojek_stats WHERE restaurant_id=? AND stat_date BETWEEN ? AND ?",
+            eng, params=(restaurant_id, start_str, end_str)
+        )
+        qg_all['stat_date'] = pd.to_datetime(qg_all['stat_date'], errors='coerce').dt.date
+        qj_all['stat_date'] = pd.to_datetime(qj_all['stat_date'], errors='coerce').dt.date
+        def _to_min_p(v):
+            if v is None:
+                return None
+            s = str(v)
+            parts = s.split(":")
+            try:
+                if len(parts) == 3:
+                    h, m, sec = parts
+                    return int(h) * 60 + int(m) + int(sec) / 60.0
+            except Exception:
+                pass
+            try:
+                return float(s)
+            except Exception:
+                return None
+        def _safe_mean(series):
+            s = pd.to_numeric(series, errors='coerce').dropna()
+            return float(s.mean()) if not s.empty else None
+        # Baselines
+        spend_g_avg = _safe_mean(qg_all.get('ads_spend'))
+        spend_j_avg = _safe_mean(qj_all.get('ads_spend'))
+        roas_g_avg = None
+        if not qg_all.empty:
+            tmp = []
+            for _, r in qg_all.iterrows():
+                a, s_ = r.get('ads_spend'), r.get('ads_sales')
+                try:
+                    a = float(a); s_ = float(s_)
+                    if a > 0:
+                        tmp.append(s_ / a)
+                except Exception:
+                    pass
+            roas_g_avg = float(np.mean(tmp)) if tmp else None
+        roas_j_avg = None
+        if not qj_all.empty:
+            tmp = []
+            for _, r in qj_all.iterrows():
+                a, s_ = r.get('ads_spend'), r.get('ads_sales')
+                try:
+                    a = float(a); s_ = float(s_)
+                    if a > 0:
+                        tmp.append(s_ / a)
+                except Exception:
+                    pass
+            roas_j_avg = float(np.mean(tmp)) if tmp else None
+        canc_g_avg = _safe_mean(qg_all.get('cancelled_orders'))
+        canc_j_avg = _safe_mean(qj_all.get('cancelled_orders'))
+        off_g_avg = _safe_mean(qg_all.get('offline_rate'))
+        prep_avg = _safe_mean(qj_all.get('preparation_time').apply(_to_min_p)) if 'preparation_time' in qj_all.columns else None
+        accept_avg = _safe_mean(qj_all.get('accepting_time').apply(_to_min_p)) if 'accepting_time' in qj_all.columns else None
+        deliv_avg = _safe_mean(qj_all.get('delivery_time').apply(_to_min_p)) if 'delivery_time' in qj_all.columns else None
+
         for d in critical_dates:
             day_mask = sub["date"].dt.normalize() == d
             idxs = np.where(day_mask.values)[0]
@@ -678,11 +741,11 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
             # Day-level raw details from stats
             ds = str(d.date())
             qg = pd.read_sql_query(
-                "SELECT sales, orders, ads_spend, ads_sales, offline_rate FROM grab_stats WHERE restaurant_id=? AND stat_date=?",
+                "SELECT sales, orders, ads_spend, ads_sales, offline_rate, cancelled_orders FROM grab_stats WHERE restaurant_id=? AND stat_date=?",
                 eng, params=(restaurant_id, ds)
             )
             qj = pd.read_sql_query(
-                "SELECT sales, orders, ads_spend, ads_sales, accepting_time, preparation_time, delivery_time, close_time FROM gojek_stats WHERE restaurant_id=? AND stat_date=?",
+                "SELECT sales, orders, ads_spend, ads_sales, accepting_time, preparation_time, delivery_time, close_time, cancelled_orders FROM gojek_stats WHERE restaurant_id=? AND stat_date=?",
                 eng, params=(restaurant_id, ds)
             )
             grab_off_mins = float(qg.iloc[0]["offline_rate"]) if (not qg.empty and pd.notna(qg.iloc[0]["offline_rate"])) else None
@@ -758,6 +821,65 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
             lines.append(f"  • 🌧️ Дождь: {rain if rain is not None else '—'} мм; 🌡️ Темп.: {temp if temp is not None else '—'}°C; 🌬️ Ветер: {wind if wind is not None else '—'}; 💧Влажность: {hum if hum is not None else '—'}")
             lines.append(f"  • 🎌 Праздник: {'да' if is_hol else 'нет'}")
             lines.append("")
+
+            # Human-friendly explanations with evidence
+            try:
+                lines.append("🧠 Пояснение простыми словами:")
+                # Marketing evidence
+                if not qg.empty:
+                    gs = qg.iloc[0]
+                    day_spend_g = float(gs.get('ads_spend')) if pd.notna(gs.get('ads_spend')) else None
+                    day_roas_g = (float(gs.get('ads_sales')) / float(gs.get('ads_spend'))) if (pd.notna(gs.get('ads_spend')) and float(gs.get('ads_spend'))>0) else None
+                    if day_roas_g is not None and roas_g_avg is not None:
+                        diff = (day_roas_g - roas_g_avg) / (roas_g_avg or 1.0) * 100.0
+                        lines.append(f"  • Реклама GRAB отработала слабее обычного: ROAS {day_roas_g:.2f}x против среднего {roas_g_avg:.2f}x ({diff:+.0f}%).")
+                    if day_spend_g is not None and spend_g_avg is not None:
+                        diff = (day_spend_g - spend_g_avg) / (spend_g_avg or 1.0) * 100.0
+                        lines.append(f"  • Бюджет GRAB {('ниже' if diff<0 else 'выше')} среднего: {_fmt_idr(day_spend_g)} vs {_fmt_idr(spend_g_avg)} ({diff:+.0f}%).")
+                if not qj.empty:
+                    js = qj.iloc[0]
+                    day_spend_j = float(js.get('ads_spend')) if pd.notna(js.get('ads_spend')) else None
+                    day_roas_j = (float(js.get('ads_sales')) / float(js.get('ads_spend'))) if (pd.notna(js.get('ads_spend')) and float(js.get('ads_spend'))>0) else None
+                    if day_roas_j is not None and roas_j_avg is not None:
+                        diff = (day_roas_j - roas_j_avg) / (roas_j_avg or 1.0) * 100.0
+                        lines.append(f"  • На GOJEK отдача рекламы тоже слабее: ROAS {day_roas_j:.2f}x против {roas_j_avg:.2f}x ({diff:+.0f}%).")
+                    if day_spend_j is not None and spend_j_avg is not None:
+                        diff = (day_spend_j - spend_j_avg) / (spend_j_avg or 1.0) * 100.0
+                        lines.append(f"  • Бюджет GOJEK {('ниже' if diff<0 else 'выше')} среднего: {_fmt_idr(day_spend_j)} vs {_fmt_idr(spend_j_avg)} ({diff:+.0f}%).")
+                # Operations evidence
+                if not qj.empty:
+                    js = qj.iloc[0]
+                    d_prep = _to_min_p(js.get('preparation_time'))
+                    d_acc = _to_min_p(js.get('accepting_time'))
+                    d_del = _to_min_p(js.get('delivery_time'))
+                    if d_prep is not None and prep_avg is not None:
+                        diff = (d_prep - prep_avg) / (prep_avg or 1.0) * 100.0
+                        lines.append(f"  • Время приготовления {d_prep:.1f} мин против среднего {prep_avg:.1f} мин ({diff:+.0f}%).")
+                    if d_acc is not None and accept_avg is not None:
+                        diff = (d_acc - accept_avg) / (accept_avg or 1.0) * 100.0
+                        lines.append(f"  • Время подтверждения {d_acc:.1f} мин против {accept_avg:.1f} мин ({diff:+.0f}%).")
+                    if d_del is not None and deliv_avg is not None:
+                        diff = (d_del - deliv_avg) / (deliv_avg or 1.0) * 100.0
+                        lines.append(f"  • Доставка {d_del:.1f} мин против {deliv_avg:.1f} мин ({diff:+.0f}%).")
+                # Availability evidence
+                if grab_off_mins is not None and off_g_avg is not None:
+                    diff = (grab_off_mins - off_g_avg) / (off_g_avg or 1.0) * 100.0
+                    lines.append(f"  • Оффлайн GRAB: {_fmt_minutes_to_hhmmss(grab_off_mins)} против среднего {_fmt_minutes_to_hhmmss(off_g_avg)} ({diff:+.0f}%).")
+                # Cancellations
+                if not qg.empty and canc_g_avg is not None:
+                    c = qg.iloc[0].get('cancelled_orders')
+                    if pd.notna(c):
+                        diff = (float(c) - canc_g_avg) / (canc_g_avg or 1.0) * 100.0 if canc_g_avg else 0.0
+                        lines.append(f"  • Отмены GRAB: {int(float(c))} против среднего {int(round(canc_g_avg))} ({diff:+.0f}%).")
+                if not qj.empty and canc_j_avg is not None:
+                    c = qj.iloc[0].get('cancelled_orders')
+                    if pd.notna(c):
+                        diff = (float(c) - canc_j_avg) / (canc_j_avg or 1.0) * 100.0 if canc_j_avg else 0.0
+                        lines.append(f"  • Отмены GOJEK: {int(float(c))} против среднего {int(round(canc_j_avg))} ({diff:+.0f}%).")
+                lines.append("")
+            except Exception:
+                pass
+
             # What-if: улучшение SLA и маркетинга, снятие оффлайна
             try:
                 row_idx = idxs[0]
