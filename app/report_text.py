@@ -688,9 +688,16 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
         def _safe_mean(series):
             s = pd.to_numeric(series, errors='coerce').dropna()
             return float(s.mean()) if not s.empty else None
+        def _safe_median(series):
+            s = pd.to_numeric(series, errors='coerce').dropna()
+            return float(s.median()) if not s.empty else None
         # Baselines
         spend_g_avg = _safe_mean(qg_all.get('ads_spend'))
         spend_j_avg = _safe_mean(qj_all.get('ads_spend'))
+        ads_sales_g_med = _safe_median(qg_all.get('ads_sales'))
+        ads_sales_j_med = _safe_median(qj_all.get('ads_sales'))
+        ads_spend_g_med = _safe_median(qg_all.get('ads_spend'))
+        ads_spend_j_med = _safe_median(qj_all.get('ads_spend'))
         roas_g_avg = None
         if not qg_all.empty:
             tmp = []
@@ -815,6 +822,9 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
             def _canon(name: str) -> str:
                 n = name.lower()
                 n = n.replace("preparation_time_mean","preparation_time").replace("accepting_time_mean","accepting_time").replace("delivery_time_mean","delivery_time")
+                # collapse temperature/wind/humidity to 'weather'
+                if any(k in n for k in ("temp","temperature","wind","humidity")):
+                    return "weather"
                 return n
             for f, v, s in neg:
                 canon = _canon(f)
@@ -1006,6 +1016,7 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
                     gs = qg.iloc[0]
                     day_spend_g = float(gs.get('ads_spend')) if pd.notna(gs.get('ads_spend')) else None
                     day_roas_g = (float(gs.get('ads_sales')) / float(gs.get('ads_spend'))) if (pd.notna(gs.get('ads_spend')) and float(gs.get('ads_spend'))>0) else None
+                    day_ads_sales_g = float(gs.get('ads_sales')) if pd.notna(gs.get('ads_sales')) else None
                     if day_roas_g is not None and roas_g_avg is not None:
                         diff = (day_roas_g - roas_g_avg) / (roas_g_avg or 1.0) * 100.0
                         extra = f"; vs прошлой недели {roas_g_last7:.2f}x" if roas_g_last7 is not None else ""
@@ -1013,10 +1024,14 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
                     if day_spend_g is not None and spend_g_avg is not None:
                         diff = (day_spend_g - spend_g_avg) / (spend_g_avg or 1.0) * 100.0
                         lines.append(f"  • Бюджет GRAB {('ниже' if diff<0 else 'выше')} медианы: {_fmt_idr(day_spend_g)} vs {_fmt_idr(spend_g_avg)} ({diff:+.0f}%).")
+                    if day_ads_sales_g is not None and ads_sales_g_med is not None:
+                        diff = (day_ads_sales_g - ads_sales_g_med) / (ads_sales_g_med or 1.0) * 100.0
+                        lines.append(f"  • Ads Sales GRAB { _fmt_idr(day_ads_sales_g)} против медианы {_fmt_idr(ads_sales_g_med)} ({diff:+.0f}%).")
                 if not qj.empty:
                     js = qj.iloc[0]
                     day_spend_j = float(js.get('ads_spend')) if pd.notna(js.get('ads_spend')) else None
                     day_roas_j = (float(js.get('ads_sales')) / float(js.get('ads_spend'))) if (pd.notna(js.get('ads_spend')) and float(js.get('ads_spend'))>0) else None
+                    day_ads_sales_j = float(js.get('ads_sales')) if pd.notna(js.get('ads_sales')) else None
                     if day_roas_j is not None and roas_j_avg is not None:
                         diff = (day_roas_j - roas_j_avg) / (roas_j_avg or 1.0) * 100.0
                         extra = f"; vs прошлой недели {roas_j_last7:.2f}x" if roas_j_last7 is not None else ""
@@ -1024,6 +1039,9 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
                     if day_spend_j is not None and spend_j_avg is not None:
                         diff = (day_spend_j - spend_j_avg) / (spend_j_avg or 1.0) * 100.0
                         lines.append(f"  • Бюджет GOJEK {('ниже' if diff<0 else 'выше')} медианы: {_fmt_idr(day_spend_j)} vs {_fmt_idr(spend_j_avg)} ({diff:+.0f}%).")
+                    if day_ads_sales_j is not None and ads_sales_j_med is not None:
+                        diff = (day_ads_sales_j - ads_sales_j_med) / (ads_sales_j_med or 1.0) * 100.0
+                        lines.append(f"  • Ads Sales GOJEK { _fmt_idr(day_ads_sales_j)} против медианы {_fmt_idr(ads_sales_j_med)} ({diff:+.0f}%).")
                 # Operations evidence with best-day reference
                 if not qj.empty:
                     js = qj.iloc[0]
@@ -1057,21 +1075,29 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
                         diff = (float(c) - canc_j_avg) / (canc_j_avg or 1.0) * 100.0 if canc_j_avg else 0.0
                         lines.append(f"  • Отмены GOJEK: {int(float(c))} против медианы {int(round(canc_j_avg))} ({diff:+.0f}%).")
                 # External context
-                if temp is not None and sub['temp'].notna().any():
-                    med_t = float(sub['temp'].median())
-                    lines.append(f"  • Температура: {temp:.1f}°C (медиана {med_t:.1f}°C).")
-                if hum is not None and sub['humidity'].notna().any():
-                    med_h = float(sub['humidity'].median())
-                    lines.append(f"  • Влажность: {hum:.0f}% (медиана {med_h:.0f}%).")
-                if wind is not None and sub['wind'].notna().any():
-                    med_w = float(sub['wind'].median())
-                    lines.append(f"  • Ветер: {wind:.1f} (медиана {med_w:.1f}).")
-                # Holiday context (previous day)
+                # Weather summary compact (avoid overemphasis on temperature alone)
+                if sub[['rain']].notna().any().any() or sub[['temp','humidity','wind']].notna().any().any():
+                    parts = []
+                    if rain is not None:
+                        parts.append(f"дождь {rain} мм")
+                    if temp is not None and sub['temp'].notna().any():
+                        med_t = float(sub['temp'].median())
+                        parts.append(f"темп. {temp:.1f}°C (мед. {med_t:.1f}°C)")
+                    if hum is not None and sub['humidity'].notna().any():
+                        med_h = float(sub['humidity'].median())
+                        parts.append(f"влажн. {hum:.0f}% (мед. {med_h:.0f}%)")
+                    if wind is not None and sub['wind'].notna().any():
+                        med_w = float(sub['wind'].median())
+                        parts.append(f"ветер {wind:.1f} (мед. {med_w:.1f})")
+                    if parts:
+                        lines.append("  • Погода: " + "; ".join(parts) + ".")
+                # Holiday context (previous 3 days)
                 try:
-                    prev_d = (pd.to_datetime(ds) - pd.Timedelta(days=1)).date()
-                    prev_h = int(sub.loc[sub['date'].dt.date == prev_d, 'is_holiday'].fillna(0).max()) if not sub.empty else 0
-                    if prev_h:
-                        lines.append("  • Накануне был праздник — обычно следующий день слабее.")
+                    ref = pd.to_datetime(ds)
+                    window = [ (ref - pd.Timedelta(days=k)).date() for k in (1,2,3) ]
+                    prev_any = int(sub.loc[sub['date'].dt.date.isin(window), 'is_holiday'].fillna(0).max()) if not sub.empty else 0
+                    if prev_any:
+                        lines.append("  • В ближайшие дни до даты был праздник — обычно следующий 1–3 дня слабее.")
                 except Exception:
                     pass
                 lines.append("")
