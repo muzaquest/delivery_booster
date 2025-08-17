@@ -533,6 +533,63 @@ def _categorize_feature(name: str) -> str:
     return "Other"
 
 
+def _pretty_feature_name(name: str) -> str:
+    n = name.lower()
+    mapping = {
+        # Marketing
+        "mkt_roas_grab": "ROAS (GRAB)",
+        "mkt_roas_gojek": "ROAS (GOJEK)",
+        "mkt_ads_spend_grab": "Рекламный бюджет (GRAB)",
+        "mkt_ads_spend_gojek": "Рекламный бюджет (GOJEK)",
+        "ads_spend_total": "Рекламный бюджет (суммарно)",
+        "impressions_total": "Показы рекламы",
+        # Operations (общие)
+        "preparation_time_mean": "Среднее время приготовления (мин)",
+        "accepting_time_mean": "Среднее время подтверждения (мин)",
+        "delivery_time_mean": "Среднее время доставки (мин)",
+        # Operations (GOJEK)
+        "ops_preparation_time_gojek": "GOJEK: время приготовления",
+        "ops_accepting_time_gojek": "GOJEK: время подтверждения",
+        "ops_delivery_time_gojek": "GOJEK: время доставки",
+        # Outage/offline
+        "outage_offline_rate_grab": "GRAB: оффлайн (мин)",
+        "offline_rate_grab": "GRAB: оффлайн (мин)",
+        # External
+        "rain": "Дождь (мм)",
+        "temp": "Температура (°C)",
+        "wind": "Ветер",
+        "humidity": "Влажность (%)",
+        "tourist_flow": "Туристический поток",
+        "is_holiday": "Праздник",
+        "day_of_week": "День недели",
+        "is_weekend": "Выходной",
+        # Quality
+        "rating": "Средний рейтинг",
+    }
+    if n in mapping:
+        return mapping[n]
+    # Heuristics: platform/time metrics
+    if n.startswith("ops_preparation_time_"):
+        plat = n.split("_")[-1].upper()
+        return f"{plat}: время приготовления"
+    if n.startswith("ops_accepting_time_"):
+        plat = n.split("_")[-1].upper()
+        return f"{plat}: время подтверждения"
+    if n.startswith("ops_delivery_time_"):
+        plat = n.split("_")[-1].upper()
+        return f"{plat}: время доставки"
+    if n.startswith("mkt_roas_"):
+        plat = n.split("_")[-1].upper()
+        return f"ROAS ({plat})"
+    if n.startswith("mkt_ads_spend_"):
+        plat = n.split("_")[-1].upper()
+        return f"Рекламный бюджет ({plat})"
+    # Fallback: make readable
+    pretty = name.replace("_", " ")
+    pretty = pretty.replace("grab", "GRAB").replace("gojek", "GOJEK").replace("roas", "ROAS")
+    return pretty
+
+
 def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
     try:
         start_str, end_str = period.split("_")
@@ -659,7 +716,7 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
                 cat = _categorize_feature(feat)
                 direction = "↑" if val > 0 else "↓"
                 share = round(100.0 * abs(val) / total_abs, 1)
-                lines.append(f"  • [{cat}] {feat}: {direction} вклад ~{_fmt_idr(abs(val))} ({share}%)")
+                lines.append(f"  • [{cat}] {_pretty_feature_name(feat)}: {direction} вклад ~{_fmt_idr(abs(val))} ({share}%)")
             lines.append("")
             lines.append("📊 Вклад групп факторов:")
             for cat in ["Operations", "Marketing", "External", "Quality", "Other"]:
@@ -789,7 +846,7 @@ def _section9_recommendations(period: str, restaurant_id: int) -> str:
 
         lines.append("Приоритеты по факторам (ML):")
         for f, v in top:
-            lines.append(f"  • [{_categorize_feature(f)}] {f}")
+            lines.append(f"  • [{_categorize_feature(f)}] {_pretty_feature_name(f)}")
         lines.append("")
         lines.append("Вклад групп факторов:")
         for k in ["Operations", "Marketing", "External", "Quality", "Other"]:
