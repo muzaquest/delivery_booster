@@ -864,96 +864,52 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
                 lines.append(f"- Погода: дождь {rain} мм снизил готовность заказывать.")
             lines.append("")
 
-            # Build category representatives (one per category) with priority/confidence and mini-bars
-            def _priority(share: float) -> str:
-                return "🔴 критично" if share >= 15.0 else ("🟠 важно" if share >= 7.0 else "🟢 второстепенно")
+            # Priorities helpers
+            def _priority_tag(share: float) -> str:
+                return "🔴" if share >= 15.0 else ("🟠" if share >= 7.0 else "🟢")
             def _confidence(share: float) -> str:
                 return "High" if share >= 15.0 else ("Medium" if share >= 8.0 else "Low")
-            def _mini_bar(share: float) -> str:
-                n = max(1, min(10, int(round(share / 5.0))))
-                return "█" * n
-            # pick best negative per category
-            cat_best: Dict[str, Tuple[str, float, float]] = {}
-            for f, v, s in neg:
-                cat = _categorize_feature(f)
-                if cat not in cat_best or s > cat_best[cat][2]:
-                    cat_best[cat] = (f, v, s)
-            # Narrative (1–2 sentences)
-            if cat_best:
-                top_cats = sorted(cat_best.items(), key=lambda x: x[1][2], reverse=True)
-                cat_names = [c for c, _ in top_cats[:2]]
-                cat_map = {"Marketing": "реклама", "Operations": "операции на кухне/доставке", "External": "внешние условия (погода/календарь)", "Quality": "качество сервиса"}
-                main1 = cat_map.get(cat_names[0], cat_names[0]) if len(cat_names) > 0 else ""
-                main2 = cat_map.get(cat_names[1], cat_names[1]) if len(cat_names) > 1 else ""
-                if main2:
-                    lines.append(f"Этот день провалился из‑за сочетания {main1} и {main2}.")
+
+            # Pick main reasons (max 3), prioritizing Marketing and Operations
+            neg_sorted = sorted(neg, key=lambda x: x[2], reverse=True)
+            main: list[Tuple[str, float, float]] = []
+            # pick best by Marketing then Operations
+            for cat_name in ["Marketing", "Operations"]:
+                cand = next(((f, v, s) for f, v, s in neg_sorted if _categorize_feature(f) == cat_name), None)
+                if cand and cand not in main:
+                    main.append(cand)
+            for item in neg_sorted:
+                if len(main) >= 3:
+                    break
+                if item not in main:
+                    main.append(item)
+
+            # Narrative 1–2 sentences
+            if main:
+                cat_labels = {"Marketing": "реклама", "Operations": "операции на кухне/доставке", "External": "внешние условия (погода/календарь)", "Quality": "качество сервиса"}
+                cats = [cat_labels.get(_categorize_feature(f), _categorize_feature(f)) for f, _, _ in main[:2]]
+                if len(cats) >= 2:
+                    lines.append(f"Этот день провалился из‑за комбинации {cats[0]} и {cats[1]}.")
                 else:
-                    lines.append(f"Основная причина просадки — {main1}.")
+                    lines.append(f"Основная причина просадки — {cats[0]}.")
                 lines.append("")
 
-            # Category table (negatives)
-            if cat_best:
-                lines.append("ТОП‑факторы (по категориям):")
-                lines.append("| Категория | Показатель | Влияние | Приоритет | Комментарий |")
-                lines.append("|---|---|---:|---|---|")
-                for cat, (f, v, s) in sorted(cat_best.items(), key=lambda x: x[1][2], reverse=True):
-                    pr = _priority(s)
-                    arrow = "▼"
-                    bar = _mini_bar(s)
-                    lines.append(f"| {cat} | {_pretty_feature_name(f)} | {arrow} {s}% {bar} | {pr} | {_comment_for(f, False)} |")
+            # Main reasons list
+            if main:
+                lines.append("Главные причины:")
+                for f, v, s in main:
+                    tag = _priority_tag(s)
+                    lines.append(f"{tag} {_pretty_feature_name(f)} ({s}%): {_comment_for(f, False)}")
                 lines.append("")
 
-            # Positives table (up to 2)
+            # Mitigating factors
             if pos:
-                lines.append("Что помогло (до 2 факторов):")
-                lines.append("| Категория | Показатель | Влияние | Комментарий |")
-                lines.append("|---|---|---:|---|")
-                for f, v, s in pos:
-                    lines.append(f"| {_categorize_feature(f)} | {_pretty_feature_name(f)} | ▲ {s}% {_mini_bar(s)} | {_comment_for(f, True)} |")
+                lines.append("Что смягчало падение:")
+                for f, v, s in pos[:2]:
+                    lines.append(f"• {_pretty_feature_name(f)} (+{s}%): {_comment_for(f, True)}")
                 lines.append("")
 
-            lines.append("📊 Вклад групп факторов:")
-            for cat in ["Operations", "Marketing", "External", "Quality", "Other"]:
-                if cat in group_shares:
-                    lines.append(f"  • {cat}: {group_shares[cat]}%")
-            lines.append("")
-            lines.append("📅 Контекст дня:")
-            # Platforms/offline
-            lines.append(f"  • 📱 GRAB оффлайн: {_fmt_minutes_to_hhmmss(grab_off_mins)}")
-            lines.append(f"  • 🛵 GOJEK оффлайн: {_hms_close(gojek_close)}")
-            # Marketing
-            if not qg.empty:
-                gs = qg.iloc[0]
-                roas_g = (float(gs["ads_sales"]) / float(gs["ads_spend"])) if (pd.notna(gs["ads_spend"]) and float(gs["ads_spend"])>0) else None
-                lines.append(f"  • 🎯 GRAB: spend {_fmt_idr(gs['ads_spend'])}, ROAS {_fmt_rate(roas_g)}x")
-            if not qj.empty:
-                js = qj.iloc[0]
-                roas_j = (float(js["ads_sales"]) / float(js["ads_spend"])) if (pd.notna(js["ads_spend"]) and float(js["ads_spend"])>0) else None
-                lines.append(f"  • 🎯 GOJEK: spend {_fmt_idr(js['ads_spend'])}, ROAS {_fmt_rate(roas_j)}x")
-            # Operations (GOJEK times)
-            if not qj.empty:
-                def _to_min(v):
-                    s = str(v)
-                    parts = s.split(":")
-                    try:
-                        if len(parts) == 3:
-                            h, m, sec = parts
-                            return int(h)*60 + int(m) + int(sec)/60.0
-                    except Exception:
-                        return None
-                    try:
-                        return float(s)
-                    except Exception:
-                        return None
-                lines.append(f"  • ⏱️ Приготовление: {_fmt_rate(_to_min(qj.iloc[0].get('preparation_time')))} мин")
-                lines.append(f"  • ⏳ Подтверждение: {_fmt_rate(_to_min(qj.iloc[0].get('accepting_time')))} мин")
-                lines.append(f"  • 🚗 Доставка: {_fmt_rate(_to_min(qj.iloc[0].get('delivery_time')))} мин")
-            # Weather/holiday
-            lines.append(f"  • 🌧️ Дождь: {rain if rain is not None else '—'} мм; 🌡️ Темп.: {temp if temp is not None else '—'}°C; 🌬️ Ветер: {wind if wind is not None else '—'}; 💧Влажность: {hum if hum is not None else '—'}")
-            lines.append(f"  • 🎌 Праздник: {'да' if is_hol else 'нет'}")
-            lines.append("")
-
-            # Evidence lines are summarized in tables/comments; skip verbose protocol
+            # Evidence lines are summarized in comments; skip protocol
 
             # What-if: отдельные рычаги и комбинированный сценарий
             try:
@@ -992,22 +948,22 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
                         x_off.loc[x_off.index[0], col] = 0.0
                 uplift_off = float(model.predict(x_off)[0] - base_pred)
 
-                # Confidence per lever
+                # Confidence per lever (by category contributions)
                 cat_contribs = {k: group_shares.get(k, 0.0) for k in ["Marketing", "Operations", "External"]}
                 conf_mark = _confidence(cat_contribs.get("Marketing", 0.0))
                 conf_ops = _confidence(cat_contribs.get("Operations", 0.0))
                 conf_off = _confidence(10.0 if (grab_off_mins and grab_off_mins > 0) else 0.0)
-                lines.append("Рекомендации (рычаги и эффект):")
-                lines.append(f"- Увеличить бюджет на работающие кампании (+10%): ≈ {_fmt_idr(uplift_bud)} ({_fmt_idr(uplift_bud)}) ✅ {conf_mark}")
-                lines.append(f"- Сократить SLA (−10% к приготовлению/подтверждению/доставке): ≈ {_fmt_idr(uplift_sla)} ({_fmt_idr(uplift_sla)}) 🟠 {conf_ops}")
-                lines.append(f"- Исключить оффлайн на платформах: ≈ {_fmt_idr(uplift_off)} ({_fmt_idr(uplift_off)}) 🟢 {conf_off}")
+                lines.append("Рекомендации:")
+                lines.append(f"🔴 Срочно — перенаправить бюджет на кампании с высокой отдачей (+10%): ≈ {_fmt_idr(uplift_bud)} ({conf_mark})")
+                lines.append(f"🟠 Важно — сократить среднее время приготовления/подтверждения на 10%: ≈ {_fmt_idr(uplift_sla)} ({conf_ops})")
+                lines.append(f"🟢 Дополнительно — исключить оффлайн на платформах: ≈ {_fmt_idr(uplift_off)} ({conf_off})")
                 lines.append("")
-                lines.append(f"💰 Потенциал восстановления: ≈ +{_fmt_idr(uplift)} ({_fmt_idr(uplift)})")
+                lines.append(f"💰 Потенциал восстановления: ~{_fmt_idr(uplift)}")
             except Exception:
                 pass
             lines.append("")
 
-        # Диагностика периода: простые оценки эффекта дождя и праздников
+        # Справка по периоду (без методологии)
         lines.append("Справка по периоду:")
         sub['heavy_rain'] = (sub['rain'].fillna(0.0) >= 10.0).astype(int)
         by_rain = sub.groupby('heavy_rain')['total_sales'].mean().to_dict()
