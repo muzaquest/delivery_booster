@@ -816,28 +816,64 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
                 if 'roas' in n:
                     # choose platform
                     if 'grab' in n and day_roas_g is not None and roas_g_avg is not None:
-                        return f"реклама GRAB {'эффективна' if is_positive else 'неэффективна'} ({day_roas_g:.2f}x vs {roas_g_avg:.2f}x)"
+                        if roas_g_avg > 0:
+                            diff = (day_roas_g - roas_g_avg) / roas_g_avg * 100.0
+                            trend = 'вырос' if diff > 0 else ('упал' if diff < 0 else 'без изменений')
+                            if trend == 'без изменений':
+                                return 'реклама GRAB — без изменений'
+                            return f"ROAS GRAB {trend} на {abs(diff):.0f}% ({day_roas_g:.2f}x против {roas_g_avg:.2f}x)"
+                        return "рекламная эффективность GRAB — без данных"
                     if 'gojek' in n and day_roas_j is not None and roas_j_avg is not None:
-                        return f"реклама GOJEK {'эффективна' if is_positive else 'неэффективна'} ({day_roas_j:.2f}x vs {roas_j_avg:.2f}x)"
+                        if roas_j_avg > 0:
+                            diff = (day_roas_j - roas_j_avg) / roas_j_avg * 100.0
+                            trend = 'вырос' if diff > 0 else ('упал' if diff < 0 else 'без изменений')
+                            if trend == 'без изменений':
+                                return 'реклама GOJEK — без изменений'
+                            return f"ROAS GOJEK {trend} на {abs(diff):.0f}% ({day_roas_j:.2f}x против {roas_j_avg:.2f}x)"
+                        return "рекламная эффективность GOJEK — без данных"
                     return "рекламная эффективность ниже нормы" if not is_positive else "рекламная эффективность выше нормы"
                 if 'ads_spend' in n or 'budget' in n:
                     if 'grab' in n and day_spend_g is not None and spend_g_avg is not None:
-                        return f"бюджет GRAB {'выше' if is_positive else 'ниже'} среднего ({_fmt_idr(day_spend_g)} vs {_fmt_idr(spend_g_avg)})"
+                        if spend_g_avg > 0:
+                            diff = (day_spend_g - spend_g_avg) / spend_g_avg * 100.0
+                            trend = 'выше' if diff > 0 else ('ниже' if diff < 0 else 'на уровне')
+                            if trend == 'на уровне':
+                                return 'бюджет GRAB — без изменений'
+                            return f"бюджет GRAB {trend} среднего на {abs(diff):.0f}% ({_fmt_idr(day_spend_g)} против {_fmt_idr(spend_g_avg)})"
+                        return "бюджет GRAB — без данных"
                     if 'gojek' in n and day_spend_j is not None and spend_j_avg is not None:
-                        return f"бюджет GOJEK {'выше' if is_positive else 'ниже'} среднего ({_fmt_idr(day_spend_j)} vs {_fmt_idr(spend_j_avg)})"
+                        if spend_j_avg > 0:
+                            diff = (day_spend_j - spend_j_avg) / spend_j_avg * 100.0
+                            trend = 'выше' if diff > 0 else ('ниже' if diff < 0 else 'на уровне')
+                            if trend == 'на уровне':
+                                return 'бюджет GOJEK — без изменений'
+                            return f"бюджет GOJEK {trend} среднего на {abs(diff):.0f}% ({_fmt_idr(day_spend_j)} против {_fmt_idr(spend_j_avg)})"
+                        return "бюджет GOJEK — без данных"
                     return "изменение рекламной активности"
                 # Operations
                 if 'preparation_time' in n:
-                    if d_prep is not None and prep_avg is not None:
-                        return f"время приготовления {'ниже' if is_positive else 'выше'} нормы ({d_prep:.1f} vs {prep_avg:.1f} мин)"
+                    if d_prep is not None and prep_avg is not None and prep_avg > 0:
+                        diff = (d_prep - prep_avg) / prep_avg * 100.0
+                        if abs(diff) < 0.5:
+                            return "время приготовления — без изменений"
+                        trend = 'ниже нормы' if diff < 0 else 'выше нормы'
+                        return f"время приготовления {trend} на {abs(diff):.0f}% ({d_prep:.1f} против {prep_avg:.1f} мин)"
                     return "скорость приготовления"
                 if 'accepting_time' in n:
-                    if d_acc is not None and accept_avg is not None:
-                        return f"подтверждение {'быстрее' if is_positive else 'дольше'} обычного ({d_acc:.1f} vs {accept_avg:.1f} мин)"
+                    if d_acc is not None and accept_avg is not None and accept_avg > 0:
+                        diff = (d_acc - accept_avg) / accept_avg * 100.0
+                        if abs(diff) < 0.5:
+                            return "подтверждение — без изменений"
+                        trend = 'быстрее обычного' if diff < 0 else 'дольше обычного'
+                        return f"подтверждение {trend} на {abs(diff):.0f}% ({d_acc:.1f} против {accept_avg:.1f} мин)"
                     return "скорость подтверждения"
                 if 'delivery_time' in n:
-                    if d_del is not None and deliv_avg is not None:
-                        return f"доставка {'быстрее' if is_positive else 'дольше'} обычного ({d_del:.1f} vs {deliv_avg:.1f} мин)"
+                    if d_del is not None and deliv_avg is not None and deliv_avg > 0:
+                        diff = (d_del - deliv_avg) / deliv_avg * 100.0
+                        if abs(diff) < 0.5:
+                            return "доставка — без изменений"
+                        trend = 'быстрее обычного' if diff < 0 else 'дольше обычного'
+                        return f"доставка {trend} на {abs(diff):.0f}% ({d_del:.1f} против {deliv_avg:.1f} мин)"
                     return "скорость доставки"
                 if 'offline' in n or 'outage' in n:
                     return "платформа была недоступна (оффлайн)"
@@ -860,7 +896,7 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
                 lines.append(f"- Главные причины: {topn}.")
             if grab_off_mins and grab_off_mins > 0:
                 lines.append(f"- Доступность: оффлайн GRAB {_fmt_minutes_to_hhmmss(grab_off_mins)}.")
-            if rain and rain > 0:
+            if rain and rain >= 5.0:
                 lines.append(f"- Погода: дождь {rain} мм снизил готовность заказывать.")
             lines.append("")
 
@@ -904,12 +940,18 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
             lines.append(f"• [External] Праздник: {'да' if is_hol else 'нет'} ({hol_share}%): {'снизил спрос' if is_hol else 'влияние незначительное'}")
             lines.append("")
 
-            # Что помогало
-            if cat_to_pos:
-                lines.append("Что смягчало падение:")
-                for cat in ["Operations", "Marketing", "External", "Quality"]:
-                    for f, s in cat_to_pos.get(cat, [])[:2]:
-                        lines.append(f"• [{cat}] {_pretty_feature_name(f)} (+{s}%): {_comment_for(f, True)}")
+            # Что смягчало
+            if pos_sorted:
+                lines.append("✅ Что смягчало:")
+                added = 0
+                for f, v, s in pos_sorted:
+                    cmt = _comment_for(f, True)
+                    if 'без изменений' in cmt:
+                        continue
+                    lines.append(f"• {_pretty_feature_name(f)} (+{s}%): {cmt}")
+                    added += 1
+                    if added >= 2:
+                        break
                 lines.append("")
 
             # Evidence lines are summarized in comments; skip protocol
