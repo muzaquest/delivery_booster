@@ -870,43 +870,46 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
             def _confidence(share: float) -> str:
                 return "High" if share >= 15.0 else ("Medium" if share >= 8.0 else "Low")
 
-            # Pick main reasons (max 3), prioritizing Marketing and Operations
+            # Build full lists by category (significant negative >=3%)
             neg_sorted = sorted(neg, key=lambda x: x[2], reverse=True)
-            main: list[Tuple[str, float, float]] = []
-            # pick best by Marketing then Operations
-            for cat_name in ["Marketing", "Operations"]:
-                cand = next(((f, v, s) for f, v, s in neg_sorted if _categorize_feature(f) == cat_name), None)
-                if cand and cand not in main:
-                    main.append(cand)
-            for item in neg_sorted:
-                if len(main) >= 3:
-                    break
-                if item not in main:
-                    main.append(item)
+            pos_sorted = sorted(pos, key=lambda x: x[2], reverse=True)
+            cat_to_neg: Dict[str, list] = {}
+            for f, v, s in neg_sorted:
+                cat_to_neg.setdefault(_categorize_feature(f), []).append((f, s))
+            cat_to_pos: Dict[str, list] = {}
+            for f, v, s in pos_sorted:
+                cat_to_pos.setdefault(_categorize_feature(f), []).append((f, s))
 
-            # Narrative 1–2 sentences
-            if main:
-                cat_labels = {"Marketing": "реклама", "Operations": "операции на кухне/доставке", "External": "внешние условия (погода/календарь)", "Quality": "качество сервиса"}
-                cats = [cat_labels.get(_categorize_feature(f), _categorize_feature(f)) for f, _, _ in main[:2]]
+            # Narrative 1–2 предложения
+            top_cats = sorted([(c, sum(s for _, s in fs)) for c, fs in cat_to_neg.items()], key=lambda x: x[1], reverse=True)
+            if top_cats:
+                label = {"Marketing": "реклама", "Operations": "операции на кухне/доставке", "External": "внешние условия (погода/календарь)", "Quality": "качество сервиса"}
+                cats = [label.get(c, c) for c, _ in top_cats[:2]]
                 if len(cats) >= 2:
                     lines.append(f"Этот день провалился из‑за комбинации {cats[0]} и {cats[1]}.")
                 else:
                     lines.append(f"Основная причина просадки — {cats[0]}.")
                 lines.append("")
 
-            # Main reasons list
-            if main:
-                lines.append("Главные причины:")
-                for f, v, s in main:
-                    tag = _priority_tag(s)
-                    lines.append(f"{tag} {_pretty_feature_name(f)} ({s}%): {_comment_for(f, False)}")
-                lines.append("")
+            # Главные причины (все значимые по категориям)
+            lines.append("Главные причины (по категориям):")
+            for cat in ["Marketing", "Operations", "External", "Quality"]:
+                if cat in cat_to_neg:
+                    for f, s in cat_to_neg[cat]:
+                        lines.append(f"{_priority_tag(s)} [{cat}] {_pretty_feature_name(f)} ({s}%): {_comment_for(f, False)}")
+            # Всегда указываем погоду и праздник
+            rain_share = _share(contrib_sum.get('rain', 0.0)) if 'rain' in contrib_sum else 0.0
+            hol_share = _share(contrib_sum.get('is_holiday', 0.0)) if 'is_holiday' in contrib_sum else 0.0
+            lines.append(f"• [External] Дождь: {rain if rain is not None else '—'} мм ({rain_share}%): {'снизил спрос' if (rain or 0)>0 else 'влияние незначительное'}")
+            lines.append(f"• [External] Праздник: {'да' if is_hol else 'нет'} ({hol_share}%): {'снизил спрос' if is_hol else 'влияние незначительное'}")
+            lines.append("")
 
-            # Mitigating factors
-            if pos:
+            # Что помогало
+            if cat_to_pos:
                 lines.append("Что смягчало падение:")
-                for f, v, s in pos[:2]:
-                    lines.append(f"• {_pretty_feature_name(f)} (+{s}%): {_comment_for(f, True)}")
+                for cat in ["Operations", "Marketing", "External", "Quality"]:
+                    for f, s in cat_to_pos.get(cat, [])[:2]:
+                        lines.append(f"• [{cat}] {_pretty_feature_name(f)} (+{s}%): {_comment_for(f, True)}")
                 lines.append("")
 
             # Evidence lines are summarized in comments; skip protocol
