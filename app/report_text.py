@@ -889,16 +889,25 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
                     return "рейтинг повлиял на спрос"
                 return "влияющий фактор периода"
 
-            # Short summary (business-oriented)
-            lines.append("Краткое резюме:")
-            lines.append(f"- Продажи ниже медианы на {_fmt_pct(delta_pct)}.")
+            # Consulting-style summary
+            lines.append("📊 Факт:")
+            lines.append(f"- Выручка: {_fmt_idr(total_sales_day)} против медианы {_fmt_idr(med)} ({_fmt_pct(delta_pct)})")
+            lines.append(f"💸 Потеря денег: {_fmt_idr(delta_idr)}")
             if neg:
                 topn = ", ".join([_pretty_feature_name(f) for f, _, _ in neg[:2]])
-                lines.append(f"- Главные причины: {topn}.")
+                lines.append(f"🔑 Главные драйверы: {topn}")
+            # Control hypotheses by categories
+            cats = set(_categorize_feature(f) for f,_,_ in neg[:3])
+            hyp_map = {"Marketing": "неэффективные креативы/аудитории, ставки/распределение бюджета",
+                       "Operations": "перегруз кухни/бутылочные горлышки, нехватка персонала в пик",
+                       "External": "меньше курьеров/выше ETA (дождь/праздник)",
+                       "Quality": "оценки и опыт влияли на конверсию"}
+            if cats:
+                lines.append("📌 Контрольные гипотезы: " + "; ".join([hyp_map.get(c, c) for c in cats]))
             if grab_off_mins and grab_off_mins > 0:
-                lines.append(f"- Доступность: оффлайн GRAB {_fmt_minutes_to_hhmmss(grab_off_mins)}.")
+                lines.append(f"- Доступность: оффлайн GRAB {_fmt_minutes_to_hhmmss(grab_off_mins)}")
             if rain and rain >= 5.0:
-                lines.append(f"- Погода: дождь {rain} мм снизил готовность заказывать.")
+                lines.append(f"- Внешний фактор: сильный дождь {rain} мм")
             lines.append("")
 
             # Priorities helpers
