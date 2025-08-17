@@ -955,6 +955,38 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
             # Human-friendly explanations with evidence
             try:
                 lines.append("🧠 Пояснение простыми словами:")
+                # Compute last 7 days baseline before current day
+                last7_g = qg_all[qg_all['stat_date'] < pd.to_datetime(ds)].tail(7)
+                last7_j = qj_all[qj_all['stat_date'] < pd.to_datetime(ds)].tail(7)
+                roas_g_last7 = None; roas_j_last7 = None
+                if not last7_g.empty:
+                    tmp=[]
+                    for _, r in last7_g.iterrows():
+                        a, s_ = r.get('ads_spend'), r.get('ads_sales')
+                        try:
+                            a=float(a); s_=float(s_)
+                            if a>0: tmp.append(s_/a)
+                        except Exception:
+                            pass
+                    roas_g_last7 = float(np.mean(tmp)) if tmp else None
+                if not last7_j.empty:
+                    tmp=[]
+                    for _, r in last7_j.iterrows():
+                        a, s_ = r.get('ads_spend'), r.get('ads_sales')
+                        try:
+                            a=float(a); s_=float(s_)
+                            if a>0: tmp.append(s_/a)
+                        except Exception:
+                            pass
+                    roas_j_last7 = float(np.mean(tmp)) if tmp else None
+                # Best day in period for operational comparison
+                best_row = daily.sort_values('total_sales', ascending=False).iloc[0] if not daily.empty else None
+                best_ds = str(pd.to_datetime(best_row['date']).date()) if best_row is not None else None
+                qj_best = pd.read_sql_query(
+                    "SELECT preparation_time, accepting_time, delivery_time FROM gojek_stats WHERE restaurant_id=? AND stat_date=?",
+                    eng, params=(restaurant_id, best_ds)
+                ) if best_ds else pd.DataFrame()
+
                 # Marketing evidence
                 if not qg.empty:
                     gs = qg.iloc[0]
@@ -962,99 +994,77 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
                     day_roas_g = (float(gs.get('ads_sales')) / float(gs.get('ads_spend'))) if (pd.notna(gs.get('ads_spend')) and float(gs.get('ads_spend'))>0) else None
                     if day_roas_g is not None and roas_g_avg is not None:
                         diff = (day_roas_g - roas_g_avg) / (roas_g_avg or 1.0) * 100.0
-                        lines.append(f"  • Реклама GRAB отработала слабее обычного: ROAS {day_roas_g:.2f}x против среднего {roas_g_avg:.2f}x ({diff:+.0f}%).")
+                        extra = f"; vs прошлой недели {roas_g_last7:.2f}x" if roas_g_last7 is not None else ""
+                        lines.append(f"  • ROAS GRAB {day_roas_g:.2f}x против медианы {roas_g_avg:.2f}x ({diff:+.0f}%){extra}.")
                     if day_spend_g is not None and spend_g_avg is not None:
                         diff = (day_spend_g - spend_g_avg) / (spend_g_avg or 1.0) * 100.0
-                        lines.append(f"  • Бюджет GRAB {('ниже' if diff<0 else 'выше')} среднего: {_fmt_idr(day_spend_g)} vs {_fmt_idr(spend_g_avg)} ({diff:+.0f}%).")
+                        lines.append(f"  • Бюджет GRAB {('ниже' if diff<0 else 'выше')} медианы: {_fmt_idr(day_spend_g)} vs {_fmt_idr(spend_g_avg)} ({diff:+.0f}%).")
                 if not qj.empty:
                     js = qj.iloc[0]
                     day_spend_j = float(js.get('ads_spend')) if pd.notna(js.get('ads_spend')) else None
                     day_roas_j = (float(js.get('ads_sales')) / float(js.get('ads_spend'))) if (pd.notna(js.get('ads_spend')) and float(js.get('ads_spend'))>0) else None
                     if day_roas_j is not None and roas_j_avg is not None:
                         diff = (day_roas_j - roas_j_avg) / (roas_j_avg or 1.0) * 100.0
-                        lines.append(f"  • На GOJEK отдача рекламы тоже слабее: ROAS {day_roas_j:.2f}x против {roas_j_avg:.2f}x ({diff:+.0f}%).")
+                        extra = f"; vs прошлой недели {roas_j_last7:.2f}x" if roas_j_last7 is not None else ""
+                        lines.append(f"  • ROAS GOJEK {day_roas_j:.2f}x против медианы {roas_j_avg:.2f}x ({diff:+.0f}%) {extra}.")
                     if day_spend_j is not None and spend_j_avg is not None:
                         diff = (day_spend_j - spend_j_avg) / (spend_j_avg or 1.0) * 100.0
-                        lines.append(f"  • Бюджет GOJEK {('ниже' if diff<0 else 'выше')} среднего: {_fmt_idr(day_spend_j)} vs {_fmt_idr(spend_j_avg)} ({diff:+.0f}%).")
-                # Operations evidence
+                        lines.append(f"  • Бюджет GOJEK {('ниже' if diff<0 else 'выше')} медианы: {_fmt_idr(day_spend_j)} vs {_fmt_idr(spend_j_avg)} ({diff:+.0f}%).")
+                # Operations evidence with best-day reference
                 if not qj.empty:
                     js = qj.iloc[0]
                     d_prep = _to_min_p(js.get('preparation_time'))
                     d_acc = _to_min_p(js.get('accepting_time'))
                     d_del = _to_min_p(js.get('delivery_time'))
+                    best_prep = _to_min_p(qj_best.iloc[0].get('preparation_time')) if not qj_best.empty else None
                     if d_prep is not None and prep_avg is not None:
                         diff = (d_prep - prep_avg) / (prep_avg or 1.0) * 100.0
-                        lines.append(f"  • Время приготовления {d_prep:.1f} мин против среднего {prep_avg:.1f} мин ({diff:+.0f}%).")
+                        tail = f"; лучший день: {best_prep:.1f} мин" if best_prep is not None else ""
+                        lines.append(f"  • Приготовление {d_prep:.1f} мин против медианы {prep_avg:.1f} мин ({diff:+.0f}%){tail}.")
                     if d_acc is not None and accept_avg is not None:
                         diff = (d_acc - accept_avg) / (accept_avg or 1.0) * 100.0
-                        lines.append(f"  • Время подтверждения {d_acc:.1f} мин против {accept_avg:.1f} мин ({diff:+.0f}%).")
+                        lines.append(f"  • Подтверждение {d_acc:.1f} мин против {accept_avg:.1f} мин ({diff:+.0f}%).")
                     if d_del is not None and deliv_avg is not None:
                         diff = (d_del - deliv_avg) / (deliv_avg or 1.0) * 100.0
                         lines.append(f"  • Доставка {d_del:.1f} мин против {deliv_avg:.1f} мин ({diff:+.0f}%).")
                 # Availability evidence
                 if grab_off_mins is not None and off_g_avg is not None:
                     diff = (grab_off_mins - off_g_avg) / (off_g_avg or 1.0) * 100.0
-                    lines.append(f"  • Оффлайн GRAB: {_fmt_minutes_to_hhmmss(grab_off_mins)} против среднего {_fmt_minutes_to_hhmmss(off_g_avg)} ({diff:+.0f}%).")
+                    lines.append(f"  • Оффлайн GRAB: {_fmt_minutes_to_hhmmss(grab_off_mins)} против медианы {_fmt_minutes_to_hhmmss(off_g_avg)} ({diff:+.0f}%).")
                 # Cancellations
                 if not qg.empty and canc_g_avg is not None:
                     c = qg.iloc[0].get('cancelled_orders')
                     if pd.notna(c):
                         diff = (float(c) - canc_g_avg) / (canc_g_avg or 1.0) * 100.0 if canc_g_avg else 0.0
-                        lines.append(f"  • Отмены GRAB: {int(float(c))} против среднего {int(round(canc_g_avg))} ({diff:+.0f}%).")
+                        lines.append(f"  • Отмены GRAB: {int(float(c))} против медианы {int(round(canc_g_avg))} ({diff:+.0f}%).")
                 if not qj.empty and canc_j_avg is not None:
                     c = qj.iloc[0].get('cancelled_orders')
                     if pd.notna(c):
                         diff = (float(c) - canc_j_avg) / (canc_j_avg or 1.0) * 100.0 if canc_j_avg else 0.0
-                        lines.append(f"  • Отмены GOJEK: {int(float(c))} против среднего {int(round(canc_j_avg))} ({diff:+.0f}%).")
+                        lines.append(f"  • Отмены GOJEK: {int(float(c))} против медианы {int(round(canc_j_avg))} ({diff:+.0f}%).")
+                # External context
+                if temp is not None and sub['temp'].notna().any():
+                    med_t = float(sub['temp'].median())
+                    lines.append(f"  • Температура: {temp:.1f}°C (медиана {med_t:.1f}°C).")
+                if hum is not None and sub['humidity'].notna().any():
+                    med_h = float(sub['humidity'].median())
+                    lines.append(f"  • Влажность: {hum:.0f}% (медиана {med_h:.0f}%).")
+                if wind is not None and sub['wind'].notna().any():
+                    med_w = float(sub['wind'].median())
+                    lines.append(f"  • Ветер: {wind:.1f} (медиана {med_w:.1f}).")
+                # Holiday context (previous day)
+                try:
+                    prev_d = (pd.to_datetime(ds) - pd.Timedelta(days=1)).date()
+                    prev_h = int(sub.loc[sub['date'].dt.date == prev_d, 'is_holiday'].fillna(0).max()) if not sub.empty else 0
+                    if prev_h:
+                        lines.append("  • Накануне был праздник — обычно следующий день слабее.")
+                except Exception:
+                    pass
                 lines.append("")
             except Exception:
                 pass
 
-            # What-if: отдельные рычаги и комбинированный сценарий
-            try:
-                row_idx = idxs[0]
-                xrow = X.iloc[[row_idx]].copy(deep=True)
-                for col in ["preparation_time_mean", "accepting_time_mean", "delivery_time_mean"]:
-                    if col in xrow.columns and pd.notna(xrow.iloc[0][col]):
-                        xrow.loc[xrow.index[0], col] = max(0.0, float(xrow.iloc[0][col]) * 0.9)
-                if "outage_offline_rate_grab" in xrow.columns and pd.notna(xrow.iloc[0]["outage_offline_rate_grab"]):
-                    xrow.loc[xrow.index[0], "outage_offline_rate_grab"] = 0.0
-                if "ads_spend_total" in xrow.columns and pd.notna(xrow.iloc[0]["ads_spend_total"]):
-                    xrow.loc[xrow.index[0], "ads_spend_total"] = float(xrow.iloc[0]["ads_spend_total"]) * 1.1
-                uplift = float(model.predict(xrow)[0] - model.predict(X.iloc[[row_idx]])[0])
-                # Individual levers
-                base_pred = float(model.predict(X.iloc[[row_idx]])[0])
-                # SLA only
-                x_sla = X.iloc[[row_idx]].copy(deep=True)
-                for col in ["preparation_time_mean", "accepting_time_mean", "delivery_time_mean"]:
-                    if col in x_sla.columns and pd.notna(x_sla.iloc[0][col]):
-                        x_sla.loc[x_sla.index[0], col] = max(0.0, float(x_sla.iloc[0][col]) * 0.9)
-                uplift_sla = float(model.predict(x_sla)[0] - base_pred)
-                # Budget only
-                x_bud = X.iloc[[row_idx]].copy(deep=True)
-                if "ads_spend_total" in x_bud.columns and pd.notna(x_bud.iloc[0].get("ads_spend_total")):
-                    x_bud.loc[x_bud.index[0], "ads_spend_total"] = float(x_bud.iloc[0]["ads_spend_total"]) * 1.1
-                else:
-                    if "mkt_ads_spend_grab" in x_bud.columns and pd.notna(x_bud.iloc[0].get("mkt_ads_spend_grab")):
-                        x_bud.loc[x_bud.index[0], "mkt_ads_spend_grab"] = float(x_bud.iloc[0]["mkt_ads_spend_grab"]) * 1.1
-                    if "mkt_ads_spend_gojek" in x_bud.columns and pd.notna(x_bud.iloc[0].get("mkt_ads_spend_gojek")):
-                        x_bud.loc[x_bud.index[0], "mkt_ads_spend_gojek"] = float(x_bud.iloc[0]["mkt_ads_spend_gojek"]) * 1.1
-                uplift_bud = float(model.predict(x_bud)[0] - base_pred)
-                # Offline only
-                x_off = X.iloc[[row_idx]].copy(deep=True)
-                for col in ["outage_offline_rate_grab", "offline_rate_grab"]:
-                    if col in x_off.columns and pd.notna(x_off.iloc[0].get(col)):
-                        x_off.loc[x_off.index[0], col] = 0.0
-                uplift_off = float(model.predict(x_off)[0] - base_pred)
-
-                lines.append("Рекомендации (рычаги и эффект):")
-                lines.append(f"- Сократить SLA (−10% к приготовлению/подтверждению/доставке): ≈ {_fmt_idr(uplift_sla)}")
-                lines.append(f"- Увеличить рекламный бюджет на 10% в работающих связках: ≈ {_fmt_idr(uplift_bud)}")
-                lines.append(f"- Исключить оффлайн на платформах: ≈ {_fmt_idr(uplift_off)}")
-                lines.append("")
-                lines.append(f"🔮 Комбинация рычагов: ожидаемый прирост ~{_fmt_idr(uplift)}")
-            except Exception:
-                pass
+            # What-if: перенесено в раздел 9; здесь оставляем чистую диагностику причин.
             lines.append("")
 
         # Диагностика периода: простые оценки эффекта дождя и праздников
