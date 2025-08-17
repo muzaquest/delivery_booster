@@ -726,9 +726,18 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
                         continue
                     val = float(np.sum(shap_values[i, cols]))
                     contrib_sum[feat] = contrib_sum.get(feat, 0.0) + val
-            # Top-10 by |impact|
-            top10 = sorted(contrib_sum.items(), key=lambda x: abs(x[1]), reverse=True)[:10]
+            # Select significant factors by |impact|: cover ~95% cumulatively and include any with share >=1%
+            contrib_sorted = sorted(contrib_sum.items(), key=lambda x: abs(x[1]), reverse=True)
             total_abs = sum(abs(v) for v in contrib_sum.values()) or 1.0
+            selected = []
+            cum = 0.0
+            for feat, val in contrib_sorted:
+                share = abs(val) / total_abs
+                if share >= 0.01 or cum < 0.95:
+                    selected.append((feat, val))
+                    cum += share
+                else:
+                    break
 
             # Group shares
             group_shares: Dict[str, float] = {}
@@ -774,8 +783,8 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
             lines.append(f"📉 КРИТИЧЕСКИЙ ДЕНЬ: {ds} (выручка: {_fmt_idr(total_sales_day)}; отклонение к медиане: {_fmt_pct(delta_pct)})")
             lines.append("—" * 72)
             # Factors table (concise)
-            lines.append("🔎 ТОП‑факторы (ML):")
-            for feat, val in top10:
+            lines.append("🔎 Факторы, повлиявшие на результат (ML):")
+            for feat, val in selected:
                 cat = _categorize_feature(feat)
                 direction = "↑" if val > 0 else "↓"
                 share = round(100.0 * abs(val) / total_abs, 1)
