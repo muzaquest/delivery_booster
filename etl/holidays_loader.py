@@ -20,14 +20,27 @@ COUNTRY = "ID"
 
 INTERNATIONAL_OBS = [
     ("-01-01", "New Year's Day", "International"),
-    ("-03-08", "International Women's Day", "International"),
-    ("-05-01", "Labour Day", "International"),
-    ("-12-25", "Christmas Day", "International"),
+    ("-01-26", "Australia Day", "International"),
     ("-02-14", "Valentine's Day", "International"),
+    ("-03-08", "International Women's Day", "International"),
+    ("-03-17", "St. Patrick's Day", "International"),
+    ("-04-01", "April Fool's Day", "International"),
+    ("-04-22", "Earth Day", "International"),
+    ("-05-01", "Labour Day", "International"),
+    ("-05-12", "Mother's Day", "International"),
+    ("-06-16", "Father's Day", "International"),
+    ("-07-04", "Independence Day (USA)", "International"),
+    ("-08-15", "Assumption Day", "International"),
+    ("-09-21", "International Peace Day", "International"),
     ("-10-31", "Halloween", "International"),
+    ("-11-11", "Veterans Day", "International"),
+    ("-11-28", "Thanksgiving", "International"),
+    ("-12-25", "Christmas Day", "International"),
+    ("-12-26", "Boxing Day", "International"),
+    ("-12-31", "New Year's Eve", "International"),
 ]
 
-# Мусульманские праздники 2025 (полный список для Индонезии)
+# Мусульманские праздники 2025 (полный календарь для Индонезии)
 MUSLIM_HOLIDAYS_2025 = [
     ("2025-01-13", "Maulid Nabi Muhammad", "Muslim"),  # День рождения Пророка
     ("2025-02-28", "Isra Miraj", "Muslim"),  # Вознесение Пророка
@@ -35,44 +48,74 @@ MUSLIM_HOLIDAYS_2025 = [
     ("2025-03-30", "Eid al-Fitr", "Muslim"),  # Окончание Рамадана (день 1)
     ("2025-03-31", "Eid al-Fitr", "Muslim"),  # Окончание Рамадана (день 2)
     ("2025-04-01", "Eid al-Fitr", "Muslim"),  # Окончание Рамадана (день 3)
+    ("2025-04-09", "Ramadan Kareem", "Muslim"),  # Рамадан благословенный
+    ("2025-05-15", "Lailat al-Qadr", "Muslim"),  # Ночь предопределения
     ("2025-06-06", "Eid al-Adha", "Muslim"),  # Курбан-байрам (день 1)  
     ("2025-06-07", "Eid al-Adha", "Muslim"),  # Курбан-байрам (день 2)
     ("2025-06-27", "Islamic New Year", "Muslim"),  # Исламский новый год (Muharram)
+    ("2025-07-15", "Muharram", "Muslim"),  # Месяц Мухаррам
+    ("2025-08-23", "Day of Ashura", "Muslim"),  # День Ашура
     ("2025-09-05", "Maulid Nabi", "Muslim"),  # День рождения Пророка (повтор)
-    ("2025-11-15", "Lailat al-Qadr", "Muslim"),  # Ночь предопределения
+    ("2025-10-12", "Islamic Calendar Event", "Muslim"),  # Исламский календарь
+    ("2025-11-15", "Lailat al-Miraj", "Muslim"),  # Ночь вознесения
     ("2025-12-09", "Day of Arafah", "Muslim"),  # День Арафат
+    ("2025-12-31", "Islamic Year End", "Muslim"),  # Конец исламского года
 ]
 
-# Балийские праздники 2025 (полный календарь)
+# Балийские праздники 2025 (полный календарь с циклами)
 BALINESE_HOLIDAYS_2025 = [
     ("2025-01-23", "Saraswati", "Balinese"),  # День знаний и мудрости
+    ("2025-02-06", "Tumpek Landep", "Balinese"),  # Благословение металла
     ("2025-02-22", "Melasti", "Balinese"),  # Очищение перед Nyepi
     ("2025-03-29", "Nyepi", "Balinese"),  # День тишины (главный праздник)
     ("2025-03-30", "Ngembak Geni", "Balinese"),  # День после Nyepi
     ("2025-04-03", "Rambut Sedana", "Balinese"),  # Балийский новый год
+    ("2025-04-17", "Tumpek Wariga", "Balinese"),  # Благословение растений
     ("2025-05-01", "Odalan", "Balinese"),  # Храмовый праздник
+    ("2025-05-15", "Purnama Kapat", "Balinese"),  # Полнолуние 4-го месяца
     ("2025-05-29", "Galungan", "Balinese"),  # Победа добра над злом
     ("2025-06-08", "Kuningan", "Balinese"),  # Завершение Galungan
+    ("2025-06-22", "Tumpek Uduh", "Balinese"),  # Благословение кокосов
+    ("2025-07-13", "Purnama Kelima", "Balinese"),  # Полнолуние 5-го месяца
     ("2025-07-17", "Purnama", "Balinese"),  # Полнолуние
+    ("2025-08-03", "Tumpek Kandang", "Balinese"),  # Благословение животных
     ("2025-08-15", "Pitra Paksa", "Balinese"),  # Поминовение предков
+    ("2025-08-29", "Purnama Keenam", "Balinese"),  # Полнолуние 6-го месяца
+    ("2025-09-14", "Tumpek Kuningan", "Balinese"),  # Благословение книг
     ("2025-09-25", "Galungan", "Balinese"),  # Второй Galungan в году
     ("2025-10-05", "Kuningan", "Balinese"),  # Второй Kuningan
+    ("2025-10-19", "Tumpek Wayang", "Balinese"),  # Благословение искусства
     ("2025-11-02", "Diwali", "Balinese"),  # Праздник огней
+    ("2025-11-16", "Purnama Kedelapan", "Balinese"),  # Полнолуние 8-го месяца
+    ("2025-11-30", "Tumpek Krulut", "Balinese"),  # Благословение музыки
+    ("2025-12-14", "Purnama Kesembilan", "Balinese"),  # Полнолуние 9-го месяца
     ("2025-12-22", "Dharma Shanti", "Balinese"),  # Религиозный праздник
+    ("2025-12-28", "Galungan", "Balinese"),  # Третий Galungan в году
 ]
 
-# Индонезийские национальные праздники (расширенный список)
+# Индонезийские национальные праздники (полный календарь 2025)
 INDONESIAN_HOLIDAYS = [
     ("-01-01", "New Year's Day", "Indonesian"),  # Новый год
+    ("-01-27", "National Education Day", "Indonesian"),  # День образования
     ("-02-10", "Chinese New Year", "Indonesian"),  # Китайский новый год
+    ("-02-28", "National Awakening Day", "Indonesian"),  # День национального пробуждения
     ("-03-11", "Ramadan begins", "Indonesian"),  # Начало Рамадана
     ("-04-18", "Good Friday", "Indonesian"),  # Страстная пятница
     ("-04-21", "Kartini Day", "Indonesian"),  # День Картини
     ("-05-01", "Labour Day", "Indonesian"),  # День труда
+    ("-05-02", "National Education Day", "Indonesian"),  # День национального образования
     ("-05-09", "Vesak Day", "Indonesian"),  # День Будды
+    ("-05-20", "National Awakening Day", "Indonesian"),  # День национального пробуждения
     ("-05-29", "Ascension Day", "Indonesian"),  # Вознесение Господне
     ("-06-01", "Pancasila Day", "Indonesian"),  # День Панчасила
+    ("-07-17", "National Constitution Day", "Indonesian"),  # День конституции
     ("-08-17", "Independence Day", "Indonesian"),  # День независимости
+    ("-09-30", "G30S/PKI Day", "Indonesian"),  # День памяти G30S
+    ("-10-02", "Batik Day", "Indonesian"),  # День батика
+    ("-10-05", "Armed Forces Day", "Indonesian"),  # День вооруженных сил
+    ("-10-28", "Youth Pledge Day", "Indonesian"),  # День клятвы молодежи
+    ("-11-10", "Heroes' Day", "Indonesian"),  # День героев
+    ("-12-22", "Mother's Day", "Indonesian"),  # День матери
     ("-12-25", "Christmas Day", "Indonesian"),  # Рождество
     ("-12-26", "Boxing Day", "Indonesian"),  # День подарков
 ]
