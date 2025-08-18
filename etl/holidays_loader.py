@@ -27,28 +27,54 @@ INTERNATIONAL_OBS = [
     ("-10-31", "Halloween", "International"),
 ]
 
-# Мусульманские праздники 2025 (фиксированные даты для Индонезии)
+# Мусульманские праздники 2025 (полный список для Индонезии)
 MUSLIM_HOLIDAYS_2025 = [
-    ("2025-04-01", "Eid al-Fitr", "Muslim"),  # Окончание Рамадана
-    ("2025-06-07", "Eid al-Adha", "Muslim"),  # Курбан-байрам
-    ("2025-07-07", "Islamic New Year", "Muslim"),  # Исламский новый год
-    ("2025-09-15", "Maulid Nabi", "Muslim"),  # День рождения Пророка
+    ("2025-01-13", "Maulid Nabi Muhammad", "Muslim"),  # День рождения Пророка
+    ("2025-02-28", "Isra Miraj", "Muslim"),  # Вознесение Пророка
+    ("2025-03-11", "Ramadan begins", "Muslim"),  # Начало Рамадана
+    ("2025-03-30", "Eid al-Fitr", "Muslim"),  # Окончание Рамадана (день 1)
+    ("2025-03-31", "Eid al-Fitr", "Muslim"),  # Окончание Рамадана (день 2)
+    ("2025-04-01", "Eid al-Fitr", "Muslim"),  # Окончание Рамадана (день 3)
+    ("2025-06-06", "Eid al-Adha", "Muslim"),  # Курбан-байрам (день 1)  
+    ("2025-06-07", "Eid al-Adha", "Muslim"),  # Курбан-байрам (день 2)
+    ("2025-06-27", "Islamic New Year", "Muslim"),  # Исламский новый год (Muharram)
+    ("2025-09-05", "Maulid Nabi", "Muslim"),  # День рождения Пророка (повтор)
+    ("2025-11-15", "Lailat al-Qadr", "Muslim"),  # Ночь предопределения
+    ("2025-12-09", "Day of Arafah", "Muslim"),  # День Арафат
 ]
 
-# Балийские праздники 2025 (фиксированные даты)
+# Балийские праздники 2025 (полный календарь)
 BALINESE_HOLIDAYS_2025 = [
-    ("2025-03-31", "Nyepi", "Balinese"),  # День тишины
+    ("2025-01-23", "Saraswati", "Balinese"),  # День знаний и мудрости
+    ("2025-02-22", "Melasti", "Balinese"),  # Очищение перед Nyepi
+    ("2025-03-29", "Nyepi", "Balinese"),  # День тишины (главный праздник)
+    ("2025-03-30", "Ngembak Geni", "Balinese"),  # День после Nyepi
+    ("2025-04-03", "Rambut Sedana", "Balinese"),  # Балийский новый год
+    ("2025-05-01", "Odalan", "Balinese"),  # Храмовый праздник
     ("2025-05-29", "Galungan", "Balinese"),  # Победа добра над злом
     ("2025-06-08", "Kuningan", "Balinese"),  # Завершение Galungan
+    ("2025-07-17", "Purnama", "Balinese"),  # Полнолуние
+    ("2025-08-15", "Pitra Paksa", "Balinese"),  # Поминовение предков
     ("2025-09-25", "Galungan", "Balinese"),  # Второй Galungan в году
     ("2025-10-05", "Kuningan", "Balinese"),  # Второй Kuningan
+    ("2025-11-02", "Diwali", "Balinese"),  # Праздник огней
+    ("2025-12-22", "Dharma Shanti", "Balinese"),  # Религиозный праздник
 ]
 
-# Индонезийские национальные праздники
+# Индонезийские национальные праздники (расширенный список)
 INDONESIAN_HOLIDAYS = [
-    ("-08-17", "Independence Day", "Indonesian"),  # День независимости
-    ("-06-01", "Pancasila Day", "Indonesian"),  # День Панчасила
+    ("-01-01", "New Year's Day", "Indonesian"),  # Новый год
+    ("-02-10", "Chinese New Year", "Indonesian"),  # Китайский новый год
+    ("-03-11", "Ramadan begins", "Indonesian"),  # Начало Рамадана
+    ("-04-18", "Good Friday", "Indonesian"),  # Страстная пятница
     ("-04-21", "Kartini Day", "Indonesian"),  # День Картини
+    ("-05-01", "Labour Day", "Indonesian"),  # День труда
+    ("-05-09", "Vesak Day", "Indonesian"),  # День Будды
+    ("-05-29", "Ascension Day", "Indonesian"),  # Вознесение Господне
+    ("-06-01", "Pancasila Day", "Indonesian"),  # День Панчасила
+    ("-08-17", "Independence Day", "Indonesian"),  # День независимости
+    ("-12-25", "Christmas Day", "Indonesian"),  # Рождество
+    ("-12-26", "Boxing Day", "Indonesian"),  # День подарков
 ]
 
 BALI_SOURCES: List[Tuple[int, str]] = [
