@@ -41,15 +41,98 @@ def _format_period(d1: date, d2: date) -> str:
 	return f"{d1.strftime('%Y-%m-%d')}_{d2.strftime('%Y-%m-%d')}"
 
 
+def _sync_restaurant_data():
+	"""Синхронизация данных ресторана с живым API"""
+	try:
+		# Проверяем доступность API клиента
+		import os
+		if not os.getenv("DATABASE_URL"):
+			st.error("❌ DATABASE_URL не настроен. Используется локальная SQLite.")
+			return
+		
+		with st.spinner('Синхронизация данных с API...'):
+			from etl.api_client import sync_all_sources
+			from datetime import date, timedelta
+			
+			# Синхронизируем последние 30 дней для всех ресторанов
+			restaurants = ['Only Kebab', 'Ika Canggu', 'Asai Cafe']  # Можно расширить
+			
+			total_updated = 0
+			for restaurant in restaurants:
+				try:
+					result = sync_all_sources(
+						restaurant, 
+						start_date=date.today() - timedelta(days=30),
+						end_date=date.today() - timedelta(days=1)
+					)
+					total_updated += result.get('total_records_updated', 0)
+				except Exception as e:
+					st.warning(f"Ошибка синхронизации {restaurant}: {e}")
+			
+			if total_updated > 0:
+				st.success(f"✅ Обновлено {total_updated} записей")
+				
+				# Проверяем нужно ли переобучение ML
+				if total_updated >= 30:
+					st.info("🤖 Рекомендуется переобучить ML модель (много новых данных)")
+					if st.button("🚀 Переобучить модель"):
+						_retrain_ml_model()
+			else:
+				st.info("ℹ️ Новых данных не найдено")
+				
+	except ImportError:
+		st.error("❌ API клиент не найден. Убедитесь что etl/api_client.py доступен.")
+	except Exception as e:
+		st.error(f"❌ Ошибка синхронизации: {e}")
+
+
+def _retrain_ml_model():
+	"""Переобучение ML модели"""
+	try:
+		with st.spinner('Переобучение ML модели...'):
+			import subprocess
+			
+			# Экспортируем данные в CSV
+			from etl.build_views import export_to_csv_for_ml
+			if export_to_csv_for_ml():
+				# Запускаем обучение
+				result = subprocess.run([
+					'python', 'ml/training.py', 
+					'--csv', '/workspace/data/live_dataset.csv',
+					'--out', '/workspace/ml/artifacts'
+				], capture_output=True, text=True, cwd='/workspace')
+				
+				if result.returncode == 0:
+					st.success("✅ ML модель переобучена успешно!")
+					st.json(result.stdout)
+				else:
+					st.error(f"❌ Ошибка обучения: {result.stderr}")
+			else:
+				st.error("❌ Ошибка экспорта данных для ML")
+				
+	except Exception as e:
+		st.error(f"❌ Ошибка переобучения: {e}")
+
+
 def tab_restaurant_analysis():
 	st.header('Анализ ресторана')
+	
+	# Кнопка обновления данных
+	col1, col2 = st.columns([3, 1])
+	with col2:
+		if st.button('🔄 Обновить данные из API'):
+			_sync_restaurant_data()
+	
 	rest_df = _list_restaurants()
 	if rest_df.empty:
-		st.warning('Таблица restaurants пуста. Убедитесь, что SQLite доступна.')
+		st.warning('Таблица restaurants пуста. Убедитесь, что БД доступна.')
 		return
 	rest_map = {f"{row['name']} (ID {row['id']})": int(row['id']) for _, row in rest_df.iterrows()}
-	label = st.selectbox('Ресторан', list(rest_map.keys()))
+	
+	with col1:
+		label = st.selectbox('Ресторан', list(rest_map.keys()))
 	rest_id = rest_map[label]
+	rest_name = label.split(' (ID')[0]
 
 	presets = _period_presets()
 	preset = st.selectbox('Период (пресеты)', list(presets.keys()))

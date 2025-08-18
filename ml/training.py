@@ -162,10 +162,25 @@ def train_model(csv_path: str = DEFAULT_DATASET, model_dir: str = DEFAULT_MODEL_
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train LightGBM and RandomForest models for sales forecasting")
     parser.add_argument("--csv", type=str, default=DEFAULT_DATASET, help="Path to merged_dataset.csv")
+    parser.add_argument("--from-db", action='store_true', help="Read data from PostgreSQL instead of CSV")
     parser.add_argument("--out", type=str, default=DEFAULT_MODEL_DIR, help="Artifacts output directory")
     args = parser.parse_args()
 
-    metrics = train_model(args.csv, args.out)
+    if args.from_db:
+        # Экспортируем данные из БД в CSV для обучения
+        from etl.build_views import export_to_csv_for_ml
+        csv_path = "/workspace/data/live_dataset.csv"
+        
+        print("📊 Экспорт данных из БД для обучения...")
+        if export_to_csv_for_ml(csv_path):
+            print(f"✅ Данные экспортированы в {csv_path}")
+            metrics = train_model(csv_path, args.out)
+        else:
+            print("❌ Ошибка экспорта данных из БД")
+            sys.exit(1)
+    else:
+        metrics = train_model(args.csv, args.out)
+    
     print(json.dumps(metrics))
 
 
