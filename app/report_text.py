@@ -607,6 +607,17 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
         lines: list[str] = []
         lines.append("8. 🚨 КРИТИЧЕСКИЕ ДНИ (ML)")
         lines.append("—" * 72)
+        def _expected_baseline_for_day(daily_df: pd.DataFrame, d: pd.Timestamp) -> float:
+            try:
+                dow = int(d.dayofweek)
+                window = daily_df[daily_df['date'] < d].tail(56)
+                same_dow = window[window['date'].dt.dayofweek == dow]
+                series = same_dow['total_sales'] if not same_dow.empty else window['total_sales']
+                if series.empty:
+                    series = daily_df['total_sales']
+                return float(series.median()) if not series.empty else 0.0
+            except Exception:
+                return 0.0
         if not critical_dates:
             lines.append("В периоде нет дней с падением ≥ 30% к медиане.")
             # Добавим краткий причинный срез по дождю/праздникам для периода
@@ -780,6 +791,8 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
             total_sales_day = float(daily.loc[daily["date"] == d, "total_sales"].iloc[0])
             delta_pct = ((total_sales_day - med) / med * 100.0) if med else None
             delta_idr = max(med - total_sales_day, 0.0) if med else 0.0
+            expected_idr = _expected_baseline_for_day(daily, d)
+            drop_idr = max(0.0, expected_idr - total_sales_day)
 
             lines.append(f"📉 КРИТИЧЕСКИЙ ДЕНЬ: {ds} (выручка: {_fmt_idr(total_sales_day)}; отклонение к медиане: {_fmt_pct(delta_pct)})")
             lines.append("—" * 72)
@@ -795,6 +808,24 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
             pos = [(f, v, s) for f, v, s in sig if v > 0]
             neg = sorted(neg, key=lambda x: x[2], reverse=True)[:5]
             pos = sorted(pos, key=lambda x: x[2], reverse=True)[:2]
+
+            # Compute monetary effect for negative factors and deduplicate
+            neg_total_abs = sum(abs(v) for f, v in contrib_sum.items() if v < 0) or 1.0
+            factor_rows_neg: list[tuple[str, float, int]] = []
+            seen_canon: set[str] = set()
+            def _canon(name: str) -> str:
+                n = name.lower()
+                n = n.replace("preparation_time_mean","preparation_time").replace("accepting_time_mean","accepting_time").replace("delivery_time_mean","delivery_time")
+                return n
+            for f, v, s in neg:
+                canon = _canon(f)
+                if canon in seen_canon:
+                    continue
+                seen_canon.add(canon)
+                money = round((abs(v) / neg_total_abs) * drop_idr)
+                if s < 5.0 and money < 50000:
+                    continue
+                factor_rows_neg.append((f, s, money))
 
             # Day-level metrics snapshot for comments
             # Build baselines already computed above: roas_g_avg, roas_j_avg, prep/accept/deliv avg, etc.
@@ -909,6 +940,28 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
             if rain and rain >= 5.0:
                 lines.append(f"- Внешний фактор: сильный дождь {rain} мм")
             lines.append("")
+
+            # Short summary and factor tables
+            lines.append("Краткое резюме:")
+            lines.append(f"- Просадка: −{_fmt_idr(drop_idr)} ({_fmt_pct(delta_pct)} к медиане/ожиданию).")
+            if factor_rows_neg:
+                topn = ", ".join([f"{_pretty_feature_name(f)} (−{_fmt_idr(m)})" for f, _, m in factor_rows_neg[:2]])
+                lines.append(f"- Главные причины: {topn}.")
+            lines.append("")
+            if factor_rows_neg:
+                lines.append("Негативные факторы (ТОП‑5):")
+                lines.append("| Фактор | Вклад | Комментарий |")
+                lines.append("|---|---:|---|")
+                for f, s, money in sorted(factor_rows_neg, key=lambda x: (x[2], x[1]), reverse=True)[:5]:
+                    lines.append(f"| {_pretty_feature_name(f)} | −{_fmt_idr(money)} ({s}%) | {_comment_for(f, False)} |")
+                lines.append("")
+            if pos:
+                lines.append("Что помогло (до 2 факторов):")
+                lines.append("| Фактор | Влияние | Комментарий |")
+                lines.append("|---|---:|---|")
+                for f, v, s in pos:
+                    lines.append(f"| {_pretty_feature_name(f)} | {s}% | {_comment_for(f, True)} |")
+                lines.append("")
 
             # Priorities helpers
             def _priority_tag(share: float) -> str:
