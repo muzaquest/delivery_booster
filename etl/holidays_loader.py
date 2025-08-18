@@ -23,6 +23,32 @@ INTERNATIONAL_OBS = [
     ("-03-08", "International Women's Day", "International"),
     ("-05-01", "Labour Day", "International"),
     ("-12-25", "Christmas Day", "International"),
+    ("-02-14", "Valentine's Day", "International"),
+    ("-10-31", "Halloween", "International"),
+]
+
+# Мусульманские праздники 2025 (фиксированные даты для Индонезии)
+MUSLIM_HOLIDAYS_2025 = [
+    ("2025-04-01", "Eid al-Fitr", "Muslim"),  # Окончание Рамадана
+    ("2025-06-07", "Eid al-Adha", "Muslim"),  # Курбан-байрам
+    ("2025-07-07", "Islamic New Year", "Muslim"),  # Исламский новый год
+    ("2025-09-15", "Maulid Nabi", "Muslim"),  # День рождения Пророка
+]
+
+# Балийские праздники 2025 (фиксированные даты)
+BALINESE_HOLIDAYS_2025 = [
+    ("2025-03-31", "Nyepi", "Balinese"),  # День тишины
+    ("2025-05-29", "Galungan", "Balinese"),  # Победа добра над злом
+    ("2025-06-08", "Kuningan", "Balinese"),  # Завершение Galungan
+    ("2025-09-25", "Galungan", "Balinese"),  # Второй Galungan в году
+    ("2025-10-05", "Kuningan", "Balinese"),  # Второй Kuningan
+]
+
+# Индонезийские национальные праздники
+INDONESIAN_HOLIDAYS = [
+    ("-08-17", "Independence Day", "Indonesian"),  # День независимости
+    ("-06-01", "Pancasila Day", "Indonesian"),  # День Панчасила
+    ("-04-21", "Kartini Day", "Indonesian"),  # День Картини
 ]
 
 BALI_SOURCES: List[Tuple[int, str]] = [
@@ -159,6 +185,13 @@ def load_holidays_df(start_date: str, end_date: str) -> pd.DataFrame:
     for y in years:
         frames.append(_fetch_year(y))
         frames.append(_international_for_year(y))
+        frames.append(_indonesian_for_year(y))
+        
+        # Добавляем фиксированные праздники для 2025
+        if y == 2025:
+            frames.append(_muslim_holidays_2025())
+            frames.append(_balinese_holidays_2025())
+        
         # Bali local, if we have a known source
         for (yy, url) in BALI_SOURCES:
             if yy == y:
@@ -172,3 +205,184 @@ def load_holidays_df(start_date: str, end_date: str) -> pd.DataFrame:
     df = df[(df["date"] >= pd.to_datetime(start)) & (df["date"] <= pd.to_datetime(end))]
     df = df.drop_duplicates(["date", "holiday_name", "region"]).sort_values("date").reset_index(drop=True)
     return df
+
+
+def _indonesian_for_year(year: int) -> pd.DataFrame:
+    """Индонезийские национальные праздники"""
+    rows = []
+    for suffix, name, region in INDONESIAN_HOLIDAYS:
+        date = dt.date.fromisoformat(f"{year}{suffix}")
+        rows.append({"date": date, "holiday_name": name, "region": region})
+    return pd.DataFrame(rows)
+
+
+def _muslim_holidays_2025() -> pd.DataFrame:
+    """Мусульманские праздники 2025"""
+    rows = []
+    for date_str, name, region in MUSLIM_HOLIDAYS_2025:
+        date = dt.date.fromisoformat(date_str)
+        rows.append({"date": date, "holiday_name": name, "region": region})
+    return pd.DataFrame(rows)
+
+
+def _balinese_holidays_2025() -> pd.DataFrame:
+    """Балийские праздники 2025"""
+    rows = []
+    for date_str, name, region in BALINESE_HOLIDAYS_2025:
+        date = dt.date.fromisoformat(date_str)
+        rows.append({"date": date, "holiday_name": name, "region": region})
+    return pd.DataFrame(rows)
+
+
+def get_holiday_info_for_date(date_str: str) -> dict:
+    """Получение информации о празднике для конкретной даты"""
+    try:
+        from datetime import datetime
+        date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+        month_day = date_obj.strftime('%m-%d')
+        
+        # Полный список всех праздников с влиянием на бизнес
+        all_holidays = {
+            # Мусульманские праздники (сильное влияние на курьеров)
+            '04-01': {
+                'name': 'Eid al-Fitr (окончание Рамадана)',
+                'type': 'Muslim',
+                'impact': 'Крупнейший мусульманский праздник — курьеры отдыхают, семейные застолья дома',
+                'sales_effect': '-30 до -50%',
+                'recommendations': 'Увеличить бюджет на 100%, таргетинг на немусульман и туристов'
+            },
+            '06-07': {
+                'name': 'Eid al-Adha (Курбан-байрам)',
+                'type': 'Muslim', 
+                'impact': 'Мусульманский праздник жертвоприношения — многие курьеры не работают',
+                'sales_effect': '-20 до -35%',
+                'recommendations': 'Увеличить бюджет на 50%, бонусы курьерам'
+            },
+            '07-07': {
+                'name': 'Islamic New Year',
+                'type': 'Muslim',
+                'impact': 'Исламский новый год — умеренное влияние',
+                'sales_effect': '-10 до -20%',
+                'recommendations': 'Небольшое увеличение бюджета'
+            },
+            '09-15': {
+                'name': 'Maulid Nabi (День рождения Пророка)',
+                'type': 'Muslim',
+                'impact': 'Религиозный праздник — умеренное влияние',
+                'sales_effect': '-15 до -25%',
+                'recommendations': 'Учесть в планировании бюджета'
+            },
+            
+            # Балийские праздники (региональное влияние)
+            '03-31': {
+                'name': 'Nyepi (День тишины)',
+                'type': 'Balinese',
+                'impact': 'Балийский новый год — остров полностью закрыт, запрет на работу',
+                'sales_effect': '-80 до -100%',
+                'recommendations': 'Не планировать активность, предупредить клиентов заранее'
+            },
+            '05-29': {
+                'name': 'Galungan',
+                'type': 'Balinese',
+                'impact': 'Балийский праздник победы добра над злом — семейные церемонии',
+                'sales_effect': '-20 до -30%',
+                'recommendations': 'Снизить ожидания, промо для туристов'
+            },
+            '06-08': {
+                'name': 'Kuningan',
+                'type': 'Balinese',
+                'impact': 'Завершение Galungan — религиозные церемонии',
+                'sales_effect': '-15 до -25%',
+                'recommendations': 'Умеренное снижение бюджета'
+            },
+            '09-25': {
+                'name': 'Galungan (второй)',
+                'type': 'Balinese',
+                'impact': 'Второй Galungan в году',
+                'sales_effect': '-20 до -30%',
+                'recommendations': 'Аналогично первому Galungan'
+            },
+            '10-05': {
+                'name': 'Kuningan (второй)',
+                'type': 'Balinese',
+                'impact': 'Второй Kuningan в году',
+                'sales_effect': '-15 до -25%',
+                'recommendations': 'Умеренное снижение активности'
+            },
+            
+            # Индонезийские национальные праздники
+            '08-17': {
+                'name': 'День независимости Индонезии',
+                'type': 'Indonesian',
+                'impact': 'Национальный праздник — государственные учреждения закрыты',
+                'sales_effect': '-15 до -25%',
+                'recommendations': 'Патриотические промо, семейные комбо'
+            },
+            '06-01': {
+                'name': 'Pancasila Day',
+                'type': 'Indonesian',
+                'impact': 'День государственной идеологии',
+                'sales_effect': '-10 до -15%',
+                'recommendations': 'Минимальное влияние'
+            },
+            '04-21': {
+                'name': 'Kartini Day',
+                'type': 'Indonesian',
+                'impact': 'День эмансипации женщин',
+                'sales_effect': '0 до -5%',
+                'recommendations': 'Промо для женщин'
+            },
+            
+            # Международные праздники (позитивное влияние)
+            '01-01': {
+                'name': 'Новый год',
+                'type': 'International',
+                'impact': 'Празднование, больше заказов еды домой',
+                'sales_effect': '+15 до +25%',
+                'recommendations': 'Увеличить бюджет, новогодние промо'
+            },
+            '12-25': {
+                'name': 'Рождество',
+                'type': 'International',
+                'impact': 'Христианский праздник — смешанное влияние',
+                'sales_effect': '-5 до +10%',
+                'recommendations': 'Рождественские промо'
+            },
+            '02-14': {
+                'name': 'День святого Валентина',
+                'type': 'International',
+                'impact': 'Романтические ужины — увеличение заказов',
+                'sales_effect': '+10 до +20%',
+                'recommendations': 'Романтические комбо, промо для пар'
+            },
+            '05-01': {
+                'name': 'День труда',
+                'type': 'International',
+                'impact': 'Выходной день — больше домашних заказов',
+                'sales_effect': '+5 до +15%',
+                'recommendations': 'Дневные промо'
+            },
+        }
+        
+        holiday_info = all_holidays.get(month_day)
+        if holiday_info:
+            return {
+                'is_holiday': True,
+                'name': holiday_info['name'],
+                'type': holiday_info['type'],
+                'description': f"{holiday_info['name']} — {holiday_info['impact']}",
+                'sales_effect': holiday_info['sales_effect'],
+                'recommendations': holiday_info['recommendations']
+            }
+        else:
+            weekday = date_obj.strftime('%A')
+            weekday_ru = {
+                'Monday': 'понедельник', 'Tuesday': 'вторник', 'Wednesday': 'среда',
+                'Thursday': 'четверг', 'Friday': 'пятница', 'Saturday': 'суббота', 'Sunday': 'воскресенье'
+            }
+            return {
+                'is_holiday': False,
+                'description': f'обычный {weekday_ru.get(weekday, weekday.lower())}, не праздник'
+            }
+    except:
+        return {'is_holiday': False, 'description': 'обычный день'}
