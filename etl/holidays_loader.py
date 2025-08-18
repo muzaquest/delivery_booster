@@ -82,6 +82,88 @@ CHINESE_HOLIDAYS_2025 = [
     ("2025-10-11", "Double Ninth Festival", "Chinese"),  # Праздник двойной девятки
 ]
 
+# ========== ИСТОРИЧЕСКИЕ ДАННЫЕ ДЛЯ ОБУЧЕНИЯ ML ==========
+
+# Мусульманские праздники 2024 (для обучения ML)
+MUSLIM_HOLIDAYS_2024 = [
+    ("2024-01-28", "Maulid Nabi Muhammad", "Muslim"),
+    ("2024-02-08", "Isra Miraj", "Muslim"),
+    ("2024-03-11", "Ramadan begins", "Muslim"),
+    ("2024-04-10", "Eid al-Fitr", "Muslim"),
+    ("2024-04-11", "Eid al-Fitr", "Muslim"),
+    ("2024-04-12", "Eid al-Fitr", "Muslim"),
+    ("2024-06-17", "Eid al-Adha", "Muslim"),
+    ("2024-06-18", "Eid al-Adha", "Muslim"),
+    ("2024-07-07", "Islamic New Year", "Muslim"),
+    ("2024-09-16", "Maulid Nabi", "Muslim"),
+    ("2024-12-31", "Islamic Year End", "Muslim"),
+]
+
+# Мусульманские праздники 2023 (для обучения ML)
+MUSLIM_HOLIDAYS_2023 = [
+    ("2023-02-18", "Isra Miraj", "Muslim"),
+    ("2023-03-23", "Ramadan begins", "Muslim"),
+    ("2023-04-22", "Eid al-Fitr", "Muslim"),
+    ("2023-04-23", "Eid al-Fitr", "Muslim"),
+    ("2023-04-24", "Eid al-Fitr", "Muslim"),
+    ("2023-06-29", "Eid al-Adha", "Muslim"),
+    ("2023-06-30", "Eid al-Adha", "Muslim"),
+    ("2023-07-19", "Islamic New Year", "Muslim"),
+    ("2023-09-28", "Maulid Nabi", "Muslim"),
+]
+
+# Балийские праздники 2024 (ключевые для обучения ML)
+BALINESE_HOLIDAYS_2024 = [
+    ("2024-03-11", "Nyepi", "Balinese"),  # День тишины
+    ("2024-03-12", "Ngembak Geni", "Balinese"),
+    ("2024-04-10", "Galungan", "Balinese"),
+    ("2024-04-20", "Kuningan", "Balinese"),
+    ("2024-06-05", "Galungan", "Balinese"),
+    ("2024-06-15", "Kuningan", "Balinese"),
+    ("2024-07-31", "Galungan", "Balinese"),
+    ("2024-08-10", "Kuningan", "Balinese"),
+    ("2024-09-25", "Galungan", "Balinese"),
+    ("2024-10-05", "Kuningan", "Balinese"),
+    ("2024-11-20", "Galungan", "Balinese"),
+    ("2024-11-30", "Kuningan", "Balinese"),
+]
+
+# Балийские праздники 2023 (ключевые для обучения ML)
+BALINESE_HOLIDAYS_2023 = [
+    ("2023-03-22", "Nyepi", "Balinese"),  # День тишины
+    ("2023-03-23", "Ngembak Geni", "Balinese"),
+    ("2023-04-22", "Galungan", "Balinese"),
+    ("2023-05-02", "Kuningan", "Balinese"),
+    ("2023-06-17", "Galungan", "Balinese"),
+    ("2023-06-27", "Kuningan", "Balinese"),
+    ("2023-08-12", "Galungan", "Balinese"),
+    ("2023-08-22", "Kuningan", "Balinese"),
+    ("2023-10-07", "Galungan", "Balinese"),
+    ("2023-10-17", "Kuningan", "Balinese"),
+    ("2023-12-02", "Galungan", "Balinese"),
+    ("2023-12-12", "Kuningan", "Balinese"),
+]
+
+# Основные международные праздники (исторические)
+INTERNATIONAL_HOLIDAYS_HISTORICAL = [
+    # 2024
+    ("2024-01-01", "New Year's Day", "International"),
+    ("2024-02-14", "Valentine's Day", "International"),
+    ("2024-03-08", "International Women's Day", "International"),
+    ("2024-05-01", "Labour Day", "International"),
+    ("2024-10-31", "Halloween", "International"),
+    ("2024-12-25", "Christmas Day", "International"),
+    ("2024-12-31", "New Year's Eve", "International"),
+    # 2023
+    ("2023-01-01", "New Year's Day", "International"),
+    ("2023-02-14", "Valentine's Day", "International"),
+    ("2023-03-08", "International Women's Day", "International"),
+    ("2023-05-01", "Labour Day", "International"),
+    ("2023-10-31", "Halloween", "International"),
+    ("2023-12-25", "Christmas Day", "International"),
+    ("2023-12-31", "New Year's Eve", "International"),
+]
+
 # Мусульманские праздники 2025 (максимально полный список)
 MUSLIM_HOLIDAYS_2025 = [
     ("2025-01-13", "Maulid Nabi Muhammad", "Muslim"),  # День рождения Пророка
@@ -345,22 +427,35 @@ def _try_parse_date_from_text(text: str, year: int):
 
 
 def load_holidays_df(start_date: str, end_date: str) -> pd.DataFrame:
+    """Загрузка всех праздников для ML обучения и аналитики"""
     start = pd.to_datetime(start_date).date()
     end = pd.to_datetime(end_date).date()
     years = list(range(start.year, end.year + 1))
 
     frames: List[pd.DataFrame] = []
     for y in years:
+        # Официальные индонезийские праздники (Nager API)
         frames.append(_fetch_year(y))
+        
+        # Международные праздники
         frames.append(_international_for_year(y))
+        
+        # Национальные индонезийские праздники
         frames.append(_indonesian_for_year(y))
         
-        # Добавляем фиксированные праздники для 2025
+        # Исторические данные для обучения ML (2023-2024)
+        if y in [2023, 2024]:
+            frames.append(_historical_holidays(y))
+        
+        # Полные праздники для 2025
         if y == 2025:
             frames.append(_muslim_holidays_2025())
             frames.append(_balinese_holidays_2025())
+            frames.append(_christian_holidays_2025())
+            frames.append(_buddhist_holidays_2025())
+            frames.append(_chinese_holidays_2025())
         
-        # Bali local, if we have a known source
+        # Локальные балийские праздники (скрейпинг)
         for (yy, url) in BALI_SOURCES:
             if yy == y:
                 frames.append(_parse_bali_local(yy, url))
@@ -372,6 +467,14 @@ def load_holidays_df(start_date: str, end_date: str) -> pd.DataFrame:
     df["date"] = pd.to_datetime(df["date"]).dt.normalize()
     df = df[(df["date"] >= pd.to_datetime(start)) & (df["date"] <= pd.to_datetime(end))]
     df = df.drop_duplicates(["date", "holiday_name", "region"]).sort_values("date").reset_index(drop=True)
+    
+    # Добавляем информацию о типе праздника для ML
+    df["holiday_type"] = df["region"]
+    df["is_major_holiday"] = df["holiday_name"].str.contains(
+        "Nyepi|Eid al-Fitr|Eid al-Adha|Galungan|Christmas|New Year", 
+        case=False, na=False
+    )
+    
     return df
 
 
@@ -397,6 +500,66 @@ def _balinese_holidays_2025() -> pd.DataFrame:
     """Балийские праздники 2025"""
     rows = []
     for date_str, name, region in BALINESE_HOLIDAYS_2025:
+        date = dt.date.fromisoformat(date_str)
+        rows.append({"date": date, "holiday_name": name, "region": region})
+    return pd.DataFrame(rows)
+
+
+def _historical_holidays(year: int) -> pd.DataFrame:
+    """Исторические праздники для обучения ML (2023-2024)"""
+    rows = []
+    
+    # Мусульманские праздники
+    if year == 2024:
+        for date_str, name, region in MUSLIM_HOLIDAYS_2024:
+            date = dt.date.fromisoformat(date_str)
+            rows.append({"date": date, "holiday_name": name, "region": region})
+    elif year == 2023:
+        for date_str, name, region in MUSLIM_HOLIDAYS_2023:
+            date = dt.date.fromisoformat(date_str)
+            rows.append({"date": date, "holiday_name": name, "region": region})
+    
+    # Балийские праздники
+    if year == 2024:
+        for date_str, name, region in BALINESE_HOLIDAYS_2024:
+            date = dt.date.fromisoformat(date_str)
+            rows.append({"date": date, "holiday_name": name, "region": region})
+    elif year == 2023:
+        for date_str, name, region in BALINESE_HOLIDAYS_2023:
+            date = dt.date.fromisoformat(date_str)
+            rows.append({"date": date, "holiday_name": name, "region": region})
+    
+    # Международные исторические праздники
+    for date_str, name, region in INTERNATIONAL_HOLIDAYS_HISTORICAL:
+        if date_str.startswith(str(year)):
+            date = dt.date.fromisoformat(date_str)
+            rows.append({"date": date, "holiday_name": name, "region": region})
+    
+    return pd.DataFrame(rows)
+
+
+def _christian_holidays_2025() -> pd.DataFrame:
+    """Христианские праздники 2025"""
+    rows = []
+    for date_str, name, region in CHRISTIAN_HOLIDAYS_2025:
+        date = dt.date.fromisoformat(date_str)
+        rows.append({"date": date, "holiday_name": name, "region": region})
+    return pd.DataFrame(rows)
+
+
+def _buddhist_holidays_2025() -> pd.DataFrame:
+    """Буддистские праздники 2025"""
+    rows = []
+    for date_str, name, region in BUDDHIST_HOLIDAYS_2025:
+        date = dt.date.fromisoformat(date_str)
+        rows.append({"date": date, "holiday_name": name, "region": region})
+    return pd.DataFrame(rows)
+
+
+def _chinese_holidays_2025() -> pd.DataFrame:
+    """Китайские праздники 2025"""
+    rows = []
+    for date_str, name, region in CHINESE_HOLIDAYS_2025:
         date = dt.date.fromisoformat(date_str)
         rows.append({"date": date, "holiday_name": name, "region": region})
     return pd.DataFrame(rows)
