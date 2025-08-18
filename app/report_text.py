@@ -949,6 +949,8 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
                 mk_headlines.append(f"GOJEK Ads: бюджет +{abs(spend_j_delta):.1f}% при падении продаж {abs(sales_j_delta):.1f}%")
             if spend_g_delta is not None and sales_g_delta is not None and spend_g_delta < 0 and sales_g_delta < 0:
                 mk_headlines.append(f"GRAB Ads: бюджет −{abs(spend_g_delta):.1f}% и продажи −{abs(sales_g_delta):.1f}% (снижение активности)")
+            if spend_j_delta is not None and sales_j_delta is not None and spend_j_delta < 0 and sales_j_delta < 0:
+                mk_headlines.append(f"GOJEK Ads: бюджет −{abs(spend_j_delta):.1f}% и продажи −{abs(sales_j_delta):.1f}% (снижение активности)")
             if mk_headlines:
                 for hl in mk_headlines[:2]:
                     lines.append(f"- {hl}.")
@@ -1019,6 +1021,8 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
                 causes.append(f"реклама GOJEK оказалась неэффективной: бюджет увеличили (+{abs(spend_j_delta):.1f}%), а продажи упали (−{abs(sales_j_delta):.1f}%)")
             if spend_g_delta is not None and sales_g_delta is not None and spend_g_delta < 0 and sales_g_delta < 0:
                 causes.append(f"снижение активности в GRAB: бюджет снизили (−{abs(spend_g_delta):.1f}%), продажи также просели (−{abs(sales_g_delta):.1f}%)")
+            if spend_j_delta is not None and sales_j_delta is not None and spend_j_delta < 0 and sales_j_delta < 0:
+                causes.append(f"снижение активности в GOJEK: бюджет снизили (−{abs(spend_j_delta):.1f}%), продажи также просели (−{abs(sales_j_delta):.1f}%)")
             # External chain: holiday -> couriers -> cancels -> sales
             canc_g_avg = _safe_mean(qg_all.get('cancelled_orders'))
             canc_j_avg = _safe_mean(qj_all.get('cancelled_orders'))
