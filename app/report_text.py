@@ -918,32 +918,16 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
                     return "дождь снизил спрос" if not is_positive else "погода благоприятна"
                 if 'day_of_week' in n or 'weekend' in n:
                     return "слабый день недели" if not is_positive else "сильный день недели"
+                # Убираем температуру/влажность/ветер из объяснений для бизнеса
                 if 'humidity' in n or 'wind' in n or 'temp' in n:
-                    return "погодные условия снизили спрос" if not is_positive else "погодные условия помогли"
+                    return "внешние условия повлияли"
                 if 'rating' in n:
                     return "рейтинг повлиял на спрос"
                 return "влияющий фактор периода"
 
-            # Consulting-style summary
-            lines.append("📊 Факт:")
-            lines.append(f"- Выручка: {_fmt_idr(total_sales_day)} против медианы {_fmt_idr(med)} ({_fmt_pct(delta_pct)})")
-            lines.append(f"💸 Потеря денег: {_fmt_idr(delta_idr)}")
-            if neg:
-                topn = ", ".join([_pretty_feature_name(f) for f, _, _ in neg[:2]])
-                lines.append(f"🔑 Главные драйверы: {topn}")
-            # Control hypotheses by categories
-            cats = set(_categorize_feature(f) for f,_,_ in neg[:3])
-            hyp_map = {"Marketing": "неэффективные креативы/аудитории, ставки/распределение бюджета",
-                       "Operations": "перегруз кухни/бутылочные горлышки, нехватка персонала в пик",
-                       "External": "меньше курьеров/выше ETA (дождь/праздник)",
-                       "Quality": "оценки и опыт влияли на конверсию"}
-            if cats:
-                lines.append("📌 Контрольные гипотезы: " + "; ".join([hyp_map.get(c, c) for c in cats]))
+            # Единый формат без устаревшего блока "Факт"/"Главные драйверы"
             if grab_off_mins and grab_off_mins > 0:
-                lines.append(f"- Доступность: оффлайн GRAB {_fmt_minutes_to_hhmmss(grab_off_mins)}")
-            if rain and rain >= 5.0:
-                lines.append(f"- Внешний фактор: сильный дождь {rain} мм")
-            lines.append("")
+                pass
 
             # Marketing block (per-channel deltas vs period average)
             def _pct_delta(val: Optional[float], avg: Optional[float]) -> Optional[float]:
@@ -998,7 +982,7 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
             lines.append(_mk_row("GRAB", day_spend_g, spend_g_delta, day_ads_sales_g, sales_g_delta))
             lines.append("")
 
-            # External factors
+            # External factors (unified rain classification)
             lines.append("Внешние факторы:")
             # Try to resolve holiday name
             holiday_name = None
@@ -1012,8 +996,17 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
                 holiday_name = None
             hol_label = f"да ({holiday_name})" if (is_hol and holiday_name) else ("да" if is_hol else "нет")
             lines.append(f"- Праздник: {hol_label}{(' — возможна низкая доступность курьеров') if is_hol else ''}")
-            if rain is not None:
-                lines.append(f"- Погода: дождь {rain:.1f} мм")
+            def _rain_label(val: Optional[float]) -> str:
+                try:
+                    r = float(val) if val is not None else 0.0
+                except Exception:
+                    r = 0.0
+                if r <= 0.0:
+                    return "не было"
+                if r < 10.0:
+                    return "слабый"
+                return "сильный"
+            lines.append(f"- Дождь: {_rain_label(rain)}")
             # Cancellations snapshot
             canc_g_day = int(qg.iloc[0]["cancelled_orders"]) if (not qg.empty and pd.notna(qg.iloc[0]["cancelled_orders"])) else 0
             canc_j_day = int(qj.iloc[0]["cancelled_orders"]) if (not qj.empty and pd.notna(qj.iloc[0]["cancelled_orders"])) else 0
@@ -1037,8 +1030,13 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
                     causes.append("праздник: меньше курьеров → больше отмен → падение продаж")
             elif is_hol:
                 causes.append("праздник снизил доступность курьеров и спрос")
-            if rain is not None and rain > 0:
-                causes.append("дождь снизил готовность заказывать и увеличил ETA")
+            # Дождь: сильный — негатив, слабый — позитивный эффект (не включаем в причины)
+            try:
+                r = float(rain) if rain is not None else 0.0
+            except Exception:
+                r = 0.0
+            if r >= 10.0:
+                causes.append("сильный дождь: меньше курьеров и больше отмен → падение продаж")
             # Add top ML factors as plain language without duplicates (collapse prep time variants)
             added_ml = 0
             used_prefixes = set()
@@ -1080,6 +1078,9 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
                 lines.append("| Фактор | Вклад | Комментарий |")
                 lines.append("|---|---:|---|")
                 for f, s, money in sorted(factor_rows_neg, key=lambda x: (x[2], x[1]), reverse=True)[:5]:
+                    fname = f.lower()
+                    if ('temp' in fname) or ('temperature' in fname) or ('humidity' in fname) or ('wind' in fname):
+                        continue
                     lines.append(f"| {_pretty_feature_name(f)} | −{_fmt_idr(money)} ({s}%) | {_comment_for(f, False)} |")
                 lines.append("")
             if pos:
@@ -1117,17 +1118,10 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
                     lines.append(f"Основная причина просадки — {cats[0]}.")
                 lines.append("")
 
-            # Главные причины (все значимые по категориям)
-            lines.append("Главные причины (по категориям):")
-            for cat in ["Marketing", "Operations", "External", "Quality"]:
-                if cat in cat_to_neg:
-                    for f, s in cat_to_neg[cat]:
-                        lines.append(f"{_priority_tag(s)} [{cat}] {_pretty_feature_name(f)} ({s}%): {_comment_for(f, False)}")
-            # Всегда указываем погоду и праздник
+            # Убираем детальный список по категориям и заменяем на краткую пометку об условиях
             rain_share = _share(contrib_sum.get('rain', 0.0)) if 'rain' in contrib_sum else 0.0
             hol_share = _share(contrib_sum.get('is_holiday', 0.0)) if 'is_holiday' in contrib_sum else 0.0
-            lines.append(f"• [External] Дождь: {rain if rain is not None else '—'} мм ({rain_share}%): {'снизил спрос' if (rain or 0)>0 else 'влияние незначительное'}")
-            lines.append(f"• [External] Праздник: {'да' if is_hol else 'нет'} ({hol_share}%): {'снизил спрос' if is_hol else 'влияние незначительное'}")
+            lines.append(f"• Условия: дождь — {_rain_label(rain)}; праздник — {'да' if is_hol else 'нет'}")
             lines.append("")
 
             # Что смягчало
