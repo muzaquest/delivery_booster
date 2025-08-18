@@ -830,14 +830,17 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
             # Day-level metrics snapshot for comments
             # Build baselines already computed above: roas_g_avg, roas_j_avg, prep/accept/deliv avg, etc.
             day_roas_g = None; day_roas_j = None; day_spend_g = None; day_spend_j = None
+            day_ads_sales_g = None; day_ads_sales_j = None
             if not qg.empty:
                 gs = qg.iloc[0]
                 day_spend_g = float(gs.get('ads_spend')) if pd.notna(gs.get('ads_spend')) else None
                 day_roas_g = (float(gs.get('ads_sales')) / float(gs.get('ads_spend'))) if (pd.notna(gs.get('ads_spend')) and float(gs.get('ads_spend'))>0) else None
+                day_ads_sales_g = float(gs.get('ads_sales')) if pd.notna(gs.get('ads_sales')) else None
             if not qj.empty:
                 js = qj.iloc[0]
                 day_spend_j = float(js.get('ads_spend')) if pd.notna(js.get('ads_spend')) else None
                 day_roas_j = (float(js.get('ads_sales')) / float(js.get('ads_spend'))) if (pd.notna(js.get('ads_spend')) and float(js.get('ads_spend'))>0) else None
+                day_ads_sales_j = float(js.get('ads_sales')) if pd.notna(js.get('ads_sales')) else None
             d_prep = _to_min_p(qj.iloc[0].get('preparation_time')) if not qj.empty else None
             d_acc = _to_min_p(qj.iloc[0].get('accepting_time')) if not qj.empty else None
             d_del = _to_min_p(qj.iloc[0].get('delivery_time')) if not qj.empty else None
@@ -939,6 +942,57 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
                 lines.append(f"- Доступность: оффлайн GRAB {_fmt_minutes_to_hhmmss(grab_off_mins)}")
             if rain and rain >= 5.0:
                 lines.append(f"- Внешний фактор: сильный дождь {rain} мм")
+            lines.append("")
+
+            # Marketing block (per-channel deltas vs period average)
+            def _pct_delta(val: Optional[float], avg: Optional[float]) -> Optional[float]:
+                try:
+                    if val is None or avg is None or float(avg) == 0.0:
+                        return None
+                    return (float(val) - float(avg)) / float(avg) * 100.0
+                except Exception:
+                    return None
+            avg_ads_sales_g = _safe_mean(qg_all.get('ads_sales')) if 'ads_sales' in qg_all.columns else None
+            avg_ads_sales_j = _safe_mean(qj_all.get('ads_sales')) if 'ads_sales' in qj_all.columns else None
+            spend_g_delta = _pct_delta(day_spend_g, spend_g_avg)
+            spend_j_delta = _pct_delta(day_spend_j, spend_j_avg)
+            sales_g_delta = _pct_delta(day_ads_sales_g, avg_ads_sales_g)
+            sales_j_delta = _pct_delta(day_ads_sales_j, avg_ads_sales_j)
+            # Headline driver examples
+            mk_headlines = []
+            if spend_j_delta is not None and sales_j_delta is not None and spend_j_delta > 0 and sales_j_delta < 0:
+                mk_headlines.append(f"GOJEK Ads: бюджет +{abs(spend_j_delta):.1f}% при падении продаж {abs(sales_j_delta):.1f}%")
+            if spend_g_delta is not None and sales_g_delta is not None and spend_g_delta < 0 and sales_g_delta < 0:
+                mk_headlines.append(f"GRAB Ads: бюджет −{abs(spend_g_delta):.1f}% и продажи −{abs(sales_g_delta):.1f}% (снижение активности)")
+            if mk_headlines:
+                for hl in mk_headlines[:2]:
+                    lines.append(f"- {hl}.")
+                lines.append("")
+            # Marketing table
+            lines.append("Маркетинг:")
+            lines.append("| Канал | Ads Spend | Ads Sales | Комментарий |")
+            lines.append("|---|---:|---:|---|")
+            def _mk_row(label: str, spend_val, spend_d, sales_val, sales_d) -> str:
+                cmt = []
+                if spend_d is not None:
+                    cmt.append("бюджет ↑" + f"{abs(spend_d):.1f}%" if spend_d > 0 else "бюджет ↓" + f"{abs(spend_d):.1f}%")
+                if sales_d is not None:
+                    cmt.append("продажи ↑" + f"{abs(sales_d):.1f}%" if sales_d > 0 else "продажи ↓" + f"{abs(sales_d):.1f}%")
+                comment = ", ".join(cmt) if cmt else "—"
+                return f"| {label} | {_fmt_idr(spend_val)} ({_fmt_pct(spend_d)}) | {_fmt_idr(sales_val)} ({_fmt_pct(sales_d)}) | {comment} |"
+            lines.append(_mk_row("GOJEK", day_spend_j, spend_j_delta, day_ads_sales_j, sales_j_delta))
+            lines.append(_mk_row("GRAB", day_spend_g, spend_g_delta, day_ads_sales_g, sales_g_delta))
+            lines.append("")
+
+            # External factors
+            lines.append("Внешние факторы:")
+            lines.append(f"- Праздник: {'да' if is_hol else 'нет'}{(' (возможна низкая доступность курьеров)') if is_hol else ''}")
+            if rain is not None:
+                lines.append(f"- Погода: дождь {rain:.1f} мм")
+            # Cancellations snapshot
+            canc_g_day = int(qg.iloc[0]["cancelled_orders"]) if (not qg.empty and pd.notna(qg.iloc[0]["cancelled_orders"])) else 0
+            canc_j_day = int(qj.iloc[0]["cancelled_orders"]) if (not qj.empty and pd.notna(qj.iloc[0]["cancelled_orders"])) else 0
+            lines.append(f"- Отмены: GRAB {canc_g_day}; GOJEK {canc_j_day}")
             lines.append("")
 
             # Short summary and factor tables
