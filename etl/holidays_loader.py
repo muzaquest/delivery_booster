@@ -40,57 +40,156 @@ INTERNATIONAL_OBS = [
     ("-12-31", "New Year's Eve", "International"),
 ]
 
-# Мусульманские праздники 2025 (полный календарь для Индонезии)
+# Христианские праздники 2025 (для католиков и протестантов в Индонезии)
+CHRISTIAN_HOLIDAYS_2025 = [
+    ("2025-01-06", "Epiphany", "Christian"),  # Богоявление
+    ("2025-02-17", "Ash Wednesday", "Christian"),  # Пепельная среда
+    ("2025-03-09", "Palm Sunday", "Christian"),  # Вербное воскресенье
+    ("2025-04-18", "Good Friday", "Christian"),  # Страстная пятница
+    ("2025-04-20", "Easter Sunday", "Christian"),  # Пасха
+    ("2025-04-21", "Easter Monday", "Christian"),  # Пасхальный понедельник
+    ("2025-05-29", "Ascension Day", "Christian"),  # Вознесение
+    ("2025-06-08", "Pentecost", "Christian"),  # Троица
+    ("2025-08-15", "Assumption of Mary", "Christian"),  # Успение Богородицы
+    ("2025-11-01", "All Saints Day", "Christian"),  # День всех святых
+    ("2025-11-02", "All Souls Day", "Christian"),  # День поминовения усопших
+    ("2025-12-08", "Immaculate Conception", "Christian"),  # Непорочное зачатие
+    ("2025-12-24", "Christmas Eve", "Christian"),  # Сочельник
+    ("2025-12-25", "Christmas Day", "Christian"),  # Рождество
+]
+
+# Буддистские праздники 2025 (для буддистов в Индонезии)
+BUDDHIST_HOLIDAYS_2025 = [
+    ("2025-02-12", "Magha Puja", "Buddhist"),  # Магха Пуджа
+    ("2025-04-13", "Songkran", "Buddhist"),  # Сонгкран (Тайский новый год)
+    ("2025-05-12", "Vesak Day", "Buddhist"),  # Весак (День Будды)
+    ("2025-05-13", "Visakha Puja", "Buddhist"),  # Висакха Пуджа
+    ("2025-07-11", "Asalha Puja", "Buddhist"),  # Асалха Пуджа
+    ("2025-07-12", "Khao Phansa", "Buddhist"),  # Кхао Пханса
+    ("2025-10-08", "Ok Phansa", "Buddhist"),  # Ок Пханса
+    ("2025-11-15", "Loy Krathong", "Buddhist"),  # Лой Кратонг
+]
+
+# Китайские традиционные праздники 2025 (для китайской общины в Индонезии)
+CHINESE_HOLIDAYS_2025 = [
+    ("2025-01-29", "Chinese New Year", "Chinese"),  # Китайский новый год
+    ("2025-02-12", "Lantern Festival", "Chinese"),  # Фестиваль фонарей
+    ("2025-04-04", "Qingming Festival", "Chinese"),  # Цинмин
+    ("2025-06-11", "Dragon Boat Festival", "Chinese"),  # Праздник драконьих лодок
+    ("2025-08-10", "Qixi Festival", "Chinese"),  # Циси (День влюбленных)
+    ("2025-08-29", "Ghost Festival", "Chinese"),  # Праздник голодных духов
+    ("2025-09-06", "Mid-Autumn Festival", "Chinese"),  # Праздник середины осени
+    ("2025-10-11", "Double Ninth Festival", "Chinese"),  # Праздник двойной девятки
+]
+
+# Мусульманские праздники 2025 (максимально полный список)
 MUSLIM_HOLIDAYS_2025 = [
     ("2025-01-13", "Maulid Nabi Muhammad", "Muslim"),  # День рождения Пророка
-    ("2025-02-28", "Isra Miraj", "Muslim"),  # Вознесение Пророка
+    ("2025-01-27", "Isra Miraj", "Muslim"),  # Вознесение Пророка (официальная дата)
+    ("2025-02-28", "Isra Miraj", "Muslim"),  # Вознесение Пророка (альт. дата)
+    ("2025-03-01", "Ramadan preparation", "Muslim"),  # Подготовка к Рамадану
     ("2025-03-11", "Ramadan begins", "Muslim"),  # Начало Рамадана
+    ("2025-03-20", "Ramadan mid-point", "Muslim"),  # Середина Рамадана
+    ("2025-03-29", "Lailat al-Qadr", "Muslim"),  # Ночь предопределения
     ("2025-03-30", "Eid al-Fitr", "Muslim"),  # Окончание Рамадана (день 1)
     ("2025-03-31", "Eid al-Fitr", "Muslim"),  # Окончание Рамадана (день 2)
     ("2025-04-01", "Eid al-Fitr", "Muslim"),  # Окончание Рамадана (день 3)
+    ("2025-04-02", "Eid celebration", "Muslim"),  # Продолжение празднования
+    ("2025-04-03", "Eid celebration", "Muslim"),  # Продолжение празднования
+    ("2025-04-04", "Eid celebration", "Muslim"),  # Продолжение празднования
+    ("2025-04-07", "Eid celebration", "Muslim"),  # Продолжение празднования
     ("2025-04-09", "Ramadan Kareem", "Muslim"),  # Рамадан благословенный
     ("2025-05-15", "Lailat al-Qadr", "Muslim"),  # Ночь предопределения
+    ("2025-06-05", "Day of Arafah", "Muslim"),  # День Арафат
     ("2025-06-06", "Eid al-Adha", "Muslim"),  # Курбан-байрам (день 1)  
     ("2025-06-07", "Eid al-Adha", "Muslim"),  # Курбан-байрам (день 2)
+    ("2025-06-08", "Eid al-Adha celebration", "Muslim"),  # Продолжение празднования
+    ("2025-06-09", "Eid al-Adha celebration", "Muslim"),  # Продолжение празднования
     ("2025-06-27", "Islamic New Year", "Muslim"),  # Исламский новый год (Muharram)
     ("2025-07-15", "Muharram", "Muslim"),  # Месяц Мухаррам
+    ("2025-07-25", "Muharram 10", "Muslim"),  # 10-й день Мухаррама
     ("2025-08-23", "Day of Ashura", "Muslim"),  # День Ашура
-    ("2025-09-05", "Maulid Nabi", "Muslim"),  # День рождения Пророка (повтор)
+    ("2025-09-05", "Maulid Nabi", "Muslim"),  # День рождения Пророка
+    ("2025-09-15", "Maulid celebration", "Muslim"),  # Празднование Маулида
     ("2025-10-12", "Islamic Calendar Event", "Muslim"),  # Исламский календарь
+    ("2025-10-22", "Rajab month", "Muslim"),  # Месяц Раджаб
     ("2025-11-15", "Lailat al-Miraj", "Muslim"),  # Ночь вознесения
+    ("2025-11-25", "Shaban month", "Muslim"),  # Месяц Шабан
     ("2025-12-09", "Day of Arafah", "Muslim"),  # День Арафат
+    ("2025-12-19", "Hijri celebration", "Muslim"),  # Хиджри празднование
     ("2025-12-31", "Islamic Year End", "Muslim"),  # Конец исламского года
 ]
 
-# Балийские праздники 2025 (полный календарь с циклами)
+# Балийские праздники 2025 (максимально полный календарь с циклами)
 BALINESE_HOLIDAYS_2025 = [
+    ("2025-01-07", "Hari Raya Siwaratri", "Balinese"),  # Шиваратри
+    ("2025-01-14", "Tilem Kepitu", "Balinese"),  # Новолуние 7-го месяца
     ("2025-01-23", "Saraswati", "Balinese"),  # День знаний и мудрости
+    ("2025-01-28", "Purnama Kepitu", "Balinese"),  # Полнолуние 7-го месяца
     ("2025-02-06", "Tumpek Landep", "Balinese"),  # Благословение металла
+    ("2025-02-08", "Hari Raya Saraswati", "Balinese"),  # Сарасвати
+    ("2025-02-12", "Hari Raya Pagerwesi", "Balinese"),  # Пагервеси
+    ("2025-02-13", "Tilem Kedelapan", "Balinese"),  # Новолуние 8-го месяца
     ("2025-02-22", "Melasti", "Balinese"),  # Очищение перед Nyepi
+    ("2025-02-27", "Purnama Kedelapan", "Balinese"),  # Полнолуние 8-го месяца
+    ("2025-03-14", "Tilem Kesanga", "Balinese"),  # Новолуние 9-го месяца
+    ("2025-03-28", "Tawur Kesanga", "Balinese"),  # Тавур Кесанга
     ("2025-03-29", "Nyepi", "Balinese"),  # День тишины (главный праздник)
     ("2025-03-30", "Ngembak Geni", "Balinese"),  # День после Nyepi
     ("2025-04-03", "Rambut Sedana", "Balinese"),  # Балийский новый год
+    ("2025-04-12", "Tilem Kedasa", "Balinese"),  # Новолуние 10-го месяца
     ("2025-04-17", "Tumpek Wariga", "Balinese"),  # Благословение растений
+    ("2025-04-22", "Penampahan Galungan", "Balinese"),  # Подготовка к Галунган
+    ("2025-04-23", "Galungan", "Balinese"),  # Галунган (первый цикл)
+    ("2025-04-24", "Umanis Galungan", "Balinese"),  # День после Галунган
+    ("2025-04-26", "Purnama Kedasa", "Balinese"),  # Полнолуние 10-го месяца
     ("2025-05-01", "Odalan", "Balinese"),  # Храмовый праздник
+    ("2025-05-02", "Penampahan Kuningan", "Balinese"),  # Подготовка к Кунинган
+    ("2025-05-03", "Kuningan", "Balinese"),  # Кунинган (первый цикл)
+    ("2025-05-11", "Tilem Jiyestha", "Balinese"),  # Новолуние месяца Джиестха
     ("2025-05-15", "Purnama Kapat", "Balinese"),  # Полнолуние 4-го месяца
-    ("2025-05-29", "Galungan", "Balinese"),  # Победа добра над злом
+    ("2025-05-25", "Purnama Jiyestha", "Balinese"),  # Полнолуние Джиестха
+    ("2025-05-29", "Tumpek Uduh", "Balinese"),  # Тумпек Удух
     ("2025-06-08", "Kuningan", "Balinese"),  # Завершение Galungan
+    ("2025-06-10", "Tilem Asadha", "Balinese"),  # Новолуние Асадха
     ("2025-06-22", "Tumpek Uduh", "Balinese"),  # Благословение кокосов
+    ("2025-06-23", "Purnama Asadha", "Balinese"),  # Полнолуние Асадха
+    ("2025-07-09", "Tilem Srawana", "Balinese"),  # Новолуние Сравана
     ("2025-07-13", "Purnama Kelima", "Balinese"),  # Полнолуние 5-го месяца
     ("2025-07-17", "Purnama", "Balinese"),  # Полнолуние
+    ("2025-07-22", "Purnama Srawana", "Balinese"),  # Полнолуние Сравана
     ("2025-08-03", "Tumpek Kandang", "Balinese"),  # Благословение животных
+    ("2025-08-07", "Tilem Bhadrawada", "Balinese"),  # Новолуние Бхадрапада
     ("2025-08-15", "Pitra Paksa", "Balinese"),  # Поминовение предков
+    ("2025-08-20", "Purnama Bhadrawada", "Balinese"),  # Полнолуние Бхадрапада
     ("2025-08-29", "Purnama Keenam", "Balinese"),  # Полнолуние 6-го месяца
+    ("2025-09-05", "Tilem Aswina", "Balinese"),  # Новолуние Асвина
+    ("2025-09-06", "Hari Raya Saraswati", "Balinese"),  # Сарасвати (второй цикл)
+    ("2025-09-10", "Hari Raya Pagerwesi", "Balinese"),  # Пагервеси (второй цикл)
     ("2025-09-14", "Tumpek Kuningan", "Balinese"),  # Благословение книг
+    ("2025-09-18", "Penampahan Galungan", "Balinese"),  # Подготовка ко второму Галунган
+    ("2025-09-19", "Purnama Aswina", "Balinese"),  # Полнолуние Асвина
     ("2025-09-25", "Galungan", "Balinese"),  # Второй Galungan в году
+    ("2025-09-26", "Umanis Galungan", "Balinese"),  # День после второго Галунган
+    ("2025-10-04", "Tilem Kartika", "Balinese"),  # Новолуние Картика
     ("2025-10-05", "Kuningan", "Balinese"),  # Второй Kuningan
+    ("2025-10-18", "Purnama Kartika", "Balinese"),  # Полнолуние Картика
     ("2025-10-19", "Tumpek Wayang", "Balinese"),  # Благословение искусства
     ("2025-11-02", "Diwali", "Balinese"),  # Праздник огней
+    ("2025-11-03", "Tilem Margasirsa", "Balinese"),  # Новолуние Маргасирса
     ("2025-11-16", "Purnama Kedelapan", "Balinese"),  # Полнолуние 8-го месяца
+    ("2025-11-17", "Purnama Margasirsa", "Balinese"),  # Полнолуние Маргасирса
+    ("2025-11-18", "Penampahan Galungan", "Balinese"),  # Подготовка к третьему Галунган
+    ("2025-11-19", "Galungan", "Balinese"),  # Третий Галунган в году
+    ("2025-11-20", "Umanis Galungan", "Balinese"),  # День после третьего Галунган
+    ("2025-11-29", "Kuningan", "Balinese"),  # Третий Кунинган
     ("2025-11-30", "Tumpek Krulut", "Balinese"),  # Благословение музыки
+    ("2025-12-02", "Tilem Pusya", "Balinese"),  # Новолуние Пушья
     ("2025-12-14", "Purnama Kesembilan", "Balinese"),  # Полнолуние 9-го месяца
+    ("2025-12-16", "Purnama Pusya", "Balinese"),  # Полнолуние Пушья
     ("2025-12-22", "Dharma Shanti", "Balinese"),  # Религиозный праздник
-    ("2025-12-28", "Galungan", "Balinese"),  # Третий Galungan в году
+    ("2025-12-28", "Galungan", "Balinese"),  # Четвертый Galungan в году
+    ("2025-12-31", "Tilem Magha", "Balinese"),  # Новолуние Магха
 ]
 
 # Индонезийские национальные праздники (полный календарь 2025)
