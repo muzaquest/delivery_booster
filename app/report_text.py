@@ -611,10 +611,10 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
         if sub.empty:
             return "8. 🚨 КРИТИЧЕСКИЕ ДНИ\n" + ("═" * 80) + "\n📊 Нет данных за выбранный период."
 
-        # Находим критические дни (падение ≥25% от медианы)
+        # Находим критические дни (падение ≥30% от медианы)
         daily = sub.groupby("date", as_index=False)["total_sales"].sum().sort_values("date")
         median_sales = float(daily["total_sales"].median()) if len(daily) else 0.0
-        threshold = 0.75 * median_sales  # 25% падение от медианы
+        threshold = 0.70 * median_sales  # 30% падение от медианы (строгий критерий)
         critical_dates = daily.loc[daily["total_sales"] <= threshold, "date"].dt.normalize().tolist()
         # Сортируем по убыванию проблемности (самые худшие дни первыми)
         critical_dates = sorted(critical_dates, key=lambda d: daily.loc[daily["date"] == d, "total_sales"].iloc[0])
@@ -622,13 +622,13 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
         lines = []
         lines.append("8. 🚨 КРИТИЧЕСКИЕ ДНИ")
         lines.append("═" * 80)
-        lines.append(f"📊 Найдено критических дней (падение ≥25%): {len(critical_dates)} из {len(daily)}")
+        lines.append(f"📊 Найдено критических дней (падение ≥30%): {len(critical_dates)} из {len(daily)}")
         lines.append(f"📈 Медианные продажи: {_fmt_idr(median_sales)}")
         lines.append(f"📉 Порог критичности: {_fmt_idr(threshold)} IDR")
         lines.append("")
         
         if not critical_dates:
-            lines.append("✅ В периоде нет критических дней (падение ≥25% от медианы)")
+            lines.append("✅ В периоде нет критических дней (падение ≥30% от медианы)")
             lines.append("🎯 Все дни показали приемлемые результаты")
             return "\n".join(lines)
 
