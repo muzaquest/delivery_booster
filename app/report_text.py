@@ -611,33 +611,30 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
         if sub.empty:
             return "8. 🚨 КРИТИЧЕСКИЕ ДНИ\n" + ("═" * 80) + "\n📊 Нет данных за выбранный период."
 
-        # Находим критические дни (падение ≥25% от медианы)
+        # Находим ВСЕ дни с продажами ниже медианы
         daily = sub.groupby("date", as_index=False)["total_sales"].sum().sort_values("date")
         median_sales = float(daily["total_sales"].median()) if len(daily) else 0.0
-        threshold = 0.75 * median_sales  # 25% падение (менее строгий критерий)
-        critical_dates = daily.loc[daily["total_sales"] <= threshold, "date"].dt.normalize().tolist()
+        # Все дни ниже медианы, отсортированные по убыванию проблемности
+        critical_dates = daily.loc[daily["total_sales"] < median_sales, "date"].dt.normalize().tolist()
+        critical_dates = sorted(critical_dates, key=lambda d: daily.loc[daily["date"] == d, "total_sales"].iloc[0])
 
         lines = []
         lines.append("8. 🚨 КРИТИЧЕСКИЕ ДНИ")
         lines.append("═" * 80)
+        lines.append(f"📊 Найдено дней с продажами ниже медианы: {len(critical_dates)} из {len(daily)}")
+        lines.append(f"📈 Медианные продажи: {_fmt_idr(median_sales)}")
+        if len(critical_dates) > 5:
+            lines.append(f"⚠️ Показаны 5 самых проблемных дней (из {len(critical_dates)})")
+        lines.append("")
         
         if not critical_dates:
-            lines.append("✅ В периоде нет критических провалов продаж (падение >25% от медианы)")
+            lines.append("✅ В периоде нет дней с продажами ниже медианы")
             lines.append("")
             lines.append(f"📊 Медианные продажи: {_fmt_idr(median_sales)}")
-            
-            # Краткая сводка по внешним факторам
-            weather_impact = _analyze_weather_impact_period(sub)
-            holiday_impact = _analyze_holiday_impact_period(sub)
-            
-            if weather_impact['significant']:
-                lines.append(f"🌧️ Влияние погоды: {weather_impact['description']}")
-            if holiday_impact['significant']:
-                lines.append(f"🎌 Влияние праздников: {holiday_impact['description']}")
-                
+            lines.append("🎯 Все дни показали результаты выше среднего уровня")
             return "\n".join(lines)
 
-        # Анализируем каждый критический день (максимум 5)
+        # Показываем детальный анализ для топ-5 самых проблемных дней
         eng = get_engine()
         for i, critical_date in enumerate(critical_dates[:5]):
             if i > 0:
@@ -647,6 +644,66 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
                 critical_date, sub, daily, median_sales, restaurant_id, start_str, end_str, eng
             )
             lines.extend(day_analysis)
+        
+        # Если дней больше 5, показываем краткий обзор остальных
+        if len(critical_dates) > 5:
+            lines.append("")
+            lines.append("📋 ОСТАЛЬНЫЕ ДНИ НИЖЕ МЕДИАНЫ")
+            lines.append("─" * 50)
+            
+            for critical_date in critical_dates[5:15]:  # Показываем еще 10 дней кратко
+                day_sales = float(daily.loc[daily["date"] == critical_date, "total_sales"].iloc[0])
+                loss_pct = ((day_sales - median_sales) / median_sales * 100)
+                loss_amount = max(median_sales - day_sales, 0)
+                
+                # Проверяем праздник
+                holiday_info = _check_holiday_by_date_simple(critical_date.strftime('%Y-%m-%d'))
+                holiday_marker = " 🕌" if "праздник" in holiday_info.lower() and "не праздник" not in holiday_info.lower() else ""
+                
+                lines.append(f"• {critical_date.strftime('%Y-%m-%d')}: {_fmt_idr(day_sales)} ({loss_pct:+.1f}%) — потери {_fmt_idr(loss_amount)}{holiday_marker}")
+            
+            if len(critical_dates) > 15:
+                remaining = len(critical_dates) - 15
+                total_remaining_losses = sum(max(median_sales - daily.loc[daily["date"] == d, "total_sales"].iloc[0], 0) 
+                                           for d in critical_dates[15:])
+                lines.append(f"• ... и еще {remaining} дней с общими потерями {_fmt_idr(total_remaining_losses)}")
+            
+            # Общие потери
+            total_losses = sum(max(median_sales - daily.loc[daily["date"] == d, "total_sales"].iloc[0], 0) 
+                             for d in critical_dates)
+            lines.append("")
+            lines.append(f"💸 **ОБЩИЕ ПОТЕРИ ОТ ВСЕХ ДНЕЙ НИЖЕ МЕДИАНЫ: {_fmt_idr(total_losses)}**")
+
+
+def _check_holiday_by_date_simple(date_str):
+    """Простая проверка праздников по дате"""
+    try:
+        from datetime import datetime
+        date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+        month_day = date_obj.strftime('%m-%d')
+        
+        holidays = {
+            '04-01': 'Eid al-Fitr (окончание Рамадана) — крупнейший мусульманский праздник',
+            '06-07': 'Eid al-Adha (Курбан-байрам) — мусульманский праздник',
+            '07-07': 'Islamic New Year — исламский новый год',
+            '09-15': 'Maulid Nabi — день рождения Пророка',
+            '03-31': 'Nyepi (День тишины) — балийский новый год',
+            '05-29': 'Galungan — балийский праздник',
+            '06-08': 'Kuningan — балийский праздник',
+            '09-25': 'Galungan (второй) — балийский праздник',
+            '10-05': 'Kuningan (второй) — балийский праздник',
+            '08-17': 'День независимости Индонезии',
+            '06-01': 'Pancasila Day — день идеологии',
+            '04-21': 'Kartini Day — день женщин',
+            '01-01': 'Новый год — увеличение заказов',
+            '02-14': 'День Валентина — романтические ужины',
+            '05-01': 'День труда — выходной день',
+            '12-25': 'Рождество',
+        }
+        
+        return holidays.get(month_day, 'обычный день, не праздник')
+    except:
+        return 'обычный день'
 
         # Общие выводы если больше 1 дня
         if len(critical_dates) > 1:
