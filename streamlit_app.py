@@ -13,9 +13,16 @@ from app.report_text import generate_full_report
 
 
 def _list_restaurants() -> pd.DataFrame:
-	eng = get_engine('/workspace/database.sqlite')
-	df = pd.read_sql_query('SELECT id, name FROM restaurants ORDER BY name', eng)
-	return df
+	"""Получение списка ресторанов через адаптер"""
+	try:
+		from app.data_adapter import get_data_adapter
+		adapter = get_data_adapter()
+		return adapter.get_restaurants_list()
+	except Exception:
+		# Fallback к старому способу
+		eng = get_engine('/workspace/database.sqlite')
+		df = pd.read_sql_query('SELECT id, name FROM restaurants ORDER BY name', eng)
+		return df
 
 
 def _ensure_reports_dir() -> str:
@@ -160,30 +167,38 @@ def tab_restaurant_analysis():
 
 
 def _aggregate_kpi(engine, start: date, end: date) -> dict:
-	start_s, end_s = start.strftime('%Y-%m-%d'), end.strftime('%Y-%m-%d')
-	q = lambda t: pd.read_sql_query(
-		f"SELECT SUM(sales) sales, SUM(orders) orders, SUM(ads_spend) ads_spend, SUM(ads_sales) ads_sales, AVG(rating) rating, SUM(cancelled_orders) canc FROM {t} WHERE stat_date BETWEEN ? AND ?",
-		engine, params=(start_s, end_s)
-	)
-	g = q('grab_stats').iloc[0].fillna(0)
-	j = q('gojek_stats').iloc[0].fillna(0)
-	sales = float(g['sales'] + j['sales'])
-	orders = float((g['orders'] or 0) + (j['orders'] or 0))
-	ads_spend = float(g['ads_spend'] + j['ads_spend'])
-	ads_sales = float(g['ads_sales'] + j['ads_sales'])
-	rating = float(((g['rating'] or 0) + (j['rating'] or 0)) / (2 if ((g['rating'] or 0) and (j['rating'] or 0)) else 1) or 0)
-	canc = float((g['canc'] or 0) + (j['canc'] or 0))
-	return {
-		'sales': sales,
-		'orders': orders,
-		'aov': (sales / orders) if orders else 0.0,
-		'ads_spend': ads_spend,
-		'ads_sales': ads_sales,
-		'roas': (ads_sales / ads_spend) if ads_spend else 0.0,
-		'rating': rating,
-		'cancels': canc,
-		'mer': (sales / ads_spend) if ads_spend else 0.0,
-	}
+	"""Получение KPI через адаптер данных"""
+	try:
+		from app.data_adapter import get_data_adapter
+		adapter = get_data_adapter()
+		start_s, end_s = start.strftime('%Y-%m-%d'), end.strftime('%Y-%m-%d')
+		return adapter.get_kpi_data(start_s, end_s)
+	except Exception:
+		# Fallback к старому способу
+		start_s, end_s = start.strftime('%Y-%m-%d'), end.strftime('%Y-%m-%d')
+		q = lambda t: pd.read_sql_query(
+			f"SELECT SUM(sales) sales, SUM(orders) orders, SUM(ads_spend) ads_spend, SUM(ads_sales) ads_sales, AVG(rating) rating, SUM(cancelled_orders) canc FROM {t} WHERE stat_date BETWEEN ? AND ?",
+			engine, params=(start_s, end_s)
+		)
+		g = q('grab_stats').iloc[0].fillna(0)
+		j = q('gojek_stats').iloc[0].fillna(0)
+		sales = float(g['sales'] + j['sales'])
+		orders = float((g['orders'] or 0) + (j['orders'] or 0))
+		ads_spend = float(g['ads_spend'] + j['ads_spend'])
+		ads_sales = float(g['ads_sales'] + j['ads_sales'])
+		rating = float(((g['rating'] or 0) + (j['rating'] or 0)) / (2 if ((g['rating'] or 0) and (j['rating'] or 0)) else 1) or 0)
+		canc = float((g['canc'] or 0) + (j['canc'] or 0))
+		return {
+			'sales': sales,
+			'orders': orders,
+			'aov': (sales / orders) if orders else 0.0,
+			'ads_spend': ads_spend,
+			'ads_sales': ads_sales,
+			'roas': (ads_sales / ads_spend) if ads_spend else 0.0,
+			'rating': rating,
+			'cancels': canc,
+			'mer': (sales / ads_spend) if ads_spend else 0.0,
+		}
 
 
 def _delta(a: float, b: float) -> float:
@@ -246,6 +261,10 @@ def tab_ai_query():
 def main():
 	st.set_page_config(page_title='Food Intelligence', layout='wide')
 	st.title('Food Intelligence — Аналитика продаж ресторанов')
+	
+	# Показываем статус данных
+	_show_data_status()
+	
 	tab1, tab2, tab3 = st.tabs(['Анализ ресторана', 'Анализ базы', 'Свободный запрос (AI)'])
 	with tab1:
 		tab_restaurant_analysis()
@@ -253,6 +272,24 @@ def main():
 		tab_base_analysis()
 	with tab3:
 		tab_ai_query()
+
+
+def _show_data_status():
+	"""Показ статуса данных в шапке"""
+	try:
+		from app.data_adapter import get_data_adapter
+		adapter = get_data_adapter()
+		status = adapter.get_data_status()
+		
+		if status.get("status") == "live":
+			st.success(f"🔄 Live данные: {status.get('restaurants')} ресторанов, последняя синхронизация: {status.get('last_sync', 'неизвестно')}")
+		elif status.get("status") == "static":
+			st.warning(f"📁 Статичные данные: {status.get('restaurants')} ресторанов. Для live данных настройте DATABASE_URL.")
+		else:
+			st.error("❌ Проблемы с данными. Проверьте подключение к БД.")
+			
+	except Exception:
+		st.info("📁 Используются локальные данные SQLite")
 
 
 if __name__ == '__main__':
