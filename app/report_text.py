@@ -15,6 +15,7 @@ from etl.data_loader import get_engine
 import numpy as np
 import re
 from ml.inference import load_artifacts, _resolve_preprocessed_feature_groups
+from etl.feature_engineering import load_holidays_df
 import shap
 import json
 
@@ -999,7 +1000,18 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
 
             # External factors
             lines.append("Внешние факторы:")
-            lines.append(f"- Праздник: {'да' if is_hol else 'нет'}{(' (возможна низкая доступность курьеров)') if is_hol else ''}")
+            # Try to resolve holiday name
+            holiday_name = None
+            try:
+                hol_df = load_holidays_df(start_str, end_str)
+                if not hol_df.empty:
+                    name_row = hol_df[hol_df["date"] == pd.to_datetime(ds)].head(1)
+                    if not name_row.empty:
+                        holiday_name = str(name_row.iloc[0].get("holiday_name") or "").strip()
+            except Exception:
+                holiday_name = None
+            hol_label = f"да ({holiday_name})" if (is_hol and holiday_name) else ("да" if is_hol else "нет")
+            lines.append(f"- Праздник: {hol_label}{(' — возможна низкая доступность курьеров') if is_hol else ''}")
             if rain is not None:
                 lines.append(f"- Погода: дождь {rain:.1f} мм")
             # Cancellations snapshot
@@ -1019,16 +1031,28 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
             canc_j_avg = _safe_mean(qj_all.get('cancelled_orders'))
             canc_up = ((canc_g_day and canc_g_avg and canc_g_day > canc_g_avg) or (canc_j_day and canc_j_avg and canc_j_day > canc_j_avg))
             if is_hol and canc_up:
-                causes.append("праздник → меньше курьеров → больше отмен → падение продаж")
+                if holiday_name:
+                    causes.append(f"{holiday_name}: меньше курьеров → больше отмен → падение продаж")
+                else:
+                    causes.append("праздник: меньше курьеров → больше отмен → падение продаж")
             elif is_hol:
                 causes.append("праздник снизил доступность курьеров и спрос")
             if rain is not None and rain > 0:
                 causes.append("дождь снизил готовность заказывать и увеличил ETA")
-            # Add top 1–2 ML factors as plain language
-            for f, v, s in neg[:2]:
+            # Add top ML factors as plain language without duplicates (collapse prep time variants)
+            added_ml = 0
+            used_prefixes = set()
+            for f, v, s in neg:
+                base = f.lower().replace("preparation_time_mean", "preparation_time").replace("ops_preparation_time_gojek", "preparation_time").replace("ops_preparation_time_grab", "preparation_time")
+                if base in used_prefixes:
+                    continue
+                used_prefixes.add(base)
                 cmt = _comment_for(f, False)
                 label = _pretty_feature_name(f)
                 causes.append(f"{label}: {cmt}")
+                added_ml += 1
+                if added_ml >= 2:
+                    break
             # Deduplicate while preserving order
             seen = set()
             causes_unique = []
