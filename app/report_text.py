@@ -972,13 +972,26 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
             lines.append("Маркетинг:")
             lines.append("| Канал | Ads Spend | Ads Sales | Комментарий |")
             lines.append("|---|---:|---:|---|")
+            def _eff_label(spend_d: Optional[float], sales_d: Optional[float]) -> str:
+                if spend_d is None or sales_d is None:
+                    return "—"
+                if spend_d > 0 and sales_d < 0:
+                    return "бюджет ↑, продажи ↓ → эффективность плохая"
+                if spend_d < 0 and sales_d > 0:
+                    return "бюджет ↓, продажи ↑ → эффективность хорошая"
+                if spend_d < 0 and sales_d < 0:
+                    return "бюджет ↓, продажи ↓"
+                if spend_d > 0 and sales_d > 0:
+                    return "бюджет ↑, продажи ↑"
+                return "—"
             def _mk_row(label: str, spend_val, spend_d, sales_val, sales_d) -> str:
                 cmt = []
                 if spend_d is not None:
                     cmt.append("бюджет ↑" + f"{abs(spend_d):.1f}%" if spend_d > 0 else "бюджет ↓" + f"{abs(spend_d):.1f}%")
                 if sales_d is not None:
                     cmt.append("продажи ↑" + f"{abs(sales_d):.1f}%" if sales_d > 0 else "продажи ↓" + f"{abs(sales_d):.1f}%")
-                comment = ", ".join(cmt) if cmt else "—"
+                cmt.append(_eff_label(spend_d, sales_d))
+                comment = ", ".join([p for p in cmt if p]) if cmt else "—"
                 return f"| {label} | {_fmt_idr(spend_val)} ({_fmt_pct(spend_d)}) | {_fmt_idr(sales_val)} ({_fmt_pct(sales_d)}) | {comment} |"
             lines.append(_mk_row("GOJEK", day_spend_j, spend_j_delta, day_ads_sales_j, sales_j_delta))
             lines.append(_mk_row("GRAB", day_spend_g, spend_g_delta, day_ads_sales_g, sales_g_delta))
@@ -994,6 +1007,42 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
             canc_j_day = int(qj.iloc[0]["cancelled_orders"]) if (not qj.empty and pd.notna(qj.iloc[0]["cancelled_orders"])) else 0
             lines.append(f"- Отмены: GRAB {canc_g_day}; GOJEK {canc_j_day}")
             lines.append("")
+
+            # Unified causes (marketing + ML + externals) — marketing-friendly wording
+            causes: list[str] = []
+            if spend_j_delta is not None and sales_j_delta is not None and spend_j_delta > 0 and sales_j_delta < 0:
+                causes.append(f"реклама GOJEK оказалась неэффективной: бюджет увеличили (+{abs(spend_j_delta):.1f}%), а продажи упали (−{abs(sales_j_delta):.1f}%)")
+            if spend_g_delta is not None and sales_g_delta is not None and spend_g_delta < 0 and sales_g_delta < 0:
+                causes.append(f"снижение активности в GRAB: бюджет снизили (−{abs(spend_g_delta):.1f}%), продажи также просели (−{abs(sales_g_delta):.1f}%)")
+            # External chain: holiday -> couriers -> cancels -> sales
+            canc_g_avg = _safe_mean(qg_all.get('cancelled_orders'))
+            canc_j_avg = _safe_mean(qj_all.get('cancelled_orders'))
+            canc_up = ((canc_g_day and canc_g_avg and canc_g_day > canc_g_avg) or (canc_j_day and canc_j_avg and canc_j_day > canc_j_avg))
+            if is_hol and canc_up:
+                causes.append("праздник → меньше курьеров → больше отмен → падение продаж")
+            elif is_hol:
+                causes.append("праздник снизил доступность курьеров и спрос")
+            if rain is not None and rain > 0:
+                causes.append("дождь снизил готовность заказывать и увеличил ETA")
+            # Add top 1–2 ML factors as plain language
+            for f, v, s in neg[:2]:
+                cmt = _comment_for(f, False)
+                label = _pretty_feature_name(f)
+                causes.append(f"{label}: {cmt}")
+            # Deduplicate while preserving order
+            seen = set()
+            causes_unique = []
+            for c in causes:
+                key = c.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                causes_unique.append(c)
+            if causes_unique:
+                lines.append("Причины:")
+                for c in causes_unique:
+                    lines.append(f"- {c}.")
+                lines.append("")
 
             # Short summary and factor tables
             lines.append("Краткое резюме:")
