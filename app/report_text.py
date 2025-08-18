@@ -698,43 +698,6 @@ def _check_holiday_by_date_simple(date_str):
         
     except Exception as e:
         return f"8. 🚨 КРИТИЧЕСКИЕ ДНИ\n{'═' * 80}\n❌ Ошибка анализа: {str(e)}"
-
-
-
-
-        # Prepare SHAP per-row
-        model, features, background = load_artifacts()
-        X = sub[features]
-        pre = model.named_steps["pre"]
-        mdl = model.named_steps["model"]
-        X_pre = pre.transform(X)
-        try:
-            if background is not None and not background.empty:
-                bg_pre = pre.transform(background[features])
-                explainer = shap.TreeExplainer(mdl, data=bg_pre, feature_perturbation="interventional")
-            else:
-                explainer = shap.TreeExplainer(mdl, feature_perturbation="interventional")
-            shap_values = explainer.shap_values(X_pre)
-        except Exception:
-            explainer = shap.TreeExplainer(mdl)
-            shap_values = explainer.shap_values(X_pre)
-
-        _, groups = _resolve_preprocessed_feature_groups(pre)
-        # Exclude trivial features
-        pat = [re.compile(r"^orders_count(?!.*conversion).*"), re.compile(r"^total_sales.*"), re.compile(r"^restaurant_id$")]
-        def is_excluded(n: str) -> bool:
-            return any(p.search(n) for p in pat)
-
-        eng = get_engine()
-        # Period baselines (для человеческих объяснений)
-        qg_all = pd.read_sql_query(
-            "SELECT stat_date, ads_spend, ads_sales, cancelled_orders, offline_rate FROM grab_stats WHERE restaurant_id=? AND stat_date BETWEEN ? AND ?",
-            eng, params=(restaurant_id, start_str, end_str)
-        )
-        qj_all = pd.read_sql_query(
-            "SELECT stat_date, ads_spend, ads_sales, accepting_time, preparation_time, delivery_time, close_time, cancelled_orders FROM gojek_stats WHERE restaurant_id=? AND stat_date BETWEEN ? AND ?",
-            eng, params=(restaurant_id, start_str, end_str)
-        )
         qg_all['stat_date'] = pd.to_datetime(qg_all['stat_date'], errors='coerce').dt.date
         qj_all['stat_date'] = pd.to_datetime(qj_all['stat_date'], errors='coerce').dt.date
         def _to_min_p(v):
