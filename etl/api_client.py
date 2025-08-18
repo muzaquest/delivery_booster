@@ -168,9 +168,46 @@ def _normalize_api_data(api_response: Dict[str, Any]) -> List[Dict[str, Any]]:
     return normalized_rows
 
 
+def ensure_restaurant_exists(restaurant_name: str) -> int:
+    """
+    Автоматически добавляет новый ресторан в restaurant_mapping если его нет
+    
+    Args:
+        restaurant_name: Название ресторана
+    
+    Returns:
+        restaurant_id (новый или существующий)
+    """
+    with _get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            # Проверяем, существует ли ресторан
+            cursor.execute(
+                "SELECT restaurant_id FROM restaurant_mapping WHERE restaurant_name = %s",
+                (restaurant_name,)
+            )
+            result = cursor.fetchone()
+            
+            if result:
+                return result[0]
+            
+            # Добавляем новый ресторан
+            cursor.execute(
+                """
+                INSERT INTO restaurant_mapping (restaurant_name, is_active, created_at)
+                VALUES (%s, TRUE, now())
+                RETURNING restaurant_id
+                """,
+                (restaurant_name,)
+            )
+            new_id = cursor.fetchone()[0]
+            logger.info(f"🆕 Автоматически добавлен новый ресторан: {restaurant_name} (ID: {new_id})")
+            return new_id
+
+
 def upsert_stats_data(rows: List[Dict[str, Any]]) -> int:
     """
     UPSERT данных в raw_stats с проверкой изменений по хешу
+    Автоматически добавляет новые рестораны в restaurant_mapping
     
     Args:
         rows: Список нормализованных записей
@@ -180,6 +217,11 @@ def upsert_stats_data(rows: List[Dict[str, Any]]) -> int:
     """
     if not rows:
         return 0
+    
+    # Автоматически добавляем новые рестораны
+    unique_restaurants = set(row["restaurant_name"] for row in rows)
+    for restaurant_name in unique_restaurants:
+        ensure_restaurant_exists(restaurant_name)
     
     upsert_sql = """
         INSERT INTO raw_stats (
