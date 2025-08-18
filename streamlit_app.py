@@ -13,9 +13,16 @@ from app.report_text import generate_full_report
 
 
 def _list_restaurants() -> pd.DataFrame:
-	eng = get_engine('/workspace/database.sqlite')
-	df = pd.read_sql_query('SELECT id, name FROM restaurants ORDER BY name', eng)
-	return df
+	"""Получение списка ресторанов через адаптер"""
+	try:
+		from app.data_adapter import get_data_adapter
+		adapter = get_data_adapter()
+		return adapter.get_restaurants_list()
+	except Exception:
+		# Fallback к старому способу
+		eng = get_engine('/workspace/database.sqlite')
+		df = pd.read_sql_query('SELECT id, name FROM restaurants ORDER BY name', eng)
+		return df
 
 
 def _ensure_reports_dir() -> str:
@@ -41,15 +48,98 @@ def _format_period(d1: date, d2: date) -> str:
 	return f"{d1.strftime('%Y-%m-%d')}_{d2.strftime('%Y-%m-%d')}"
 
 
+def _sync_restaurant_data():
+	"""Синхронизация данных ресторана с живым API"""
+	try:
+		# Проверяем доступность API клиента
+		import os
+		if not os.getenv("DATABASE_URL"):
+			st.error("❌ DATABASE_URL не настроен. Используется локальная SQLite.")
+			return
+		
+		with st.spinner('Синхронизация данных с API...'):
+			from etl.api_client import sync_all_sources
+			from datetime import date, timedelta
+			
+			# Синхронизируем последние 30 дней для всех ресторанов
+			restaurants = ['Only Kebab', 'Ika Canggu', 'Asai Cafe']  # Можно расширить
+			
+			total_updated = 0
+			for restaurant in restaurants:
+				try:
+					result = sync_all_sources(
+						restaurant, 
+						start_date=date.today() - timedelta(days=30),
+						end_date=date.today() - timedelta(days=1)
+					)
+					total_updated += result.get('total_records_updated', 0)
+				except Exception as e:
+					st.warning(f"Ошибка синхронизации {restaurant}: {e}")
+			
+			if total_updated > 0:
+				st.success(f"✅ Обновлено {total_updated} записей")
+				
+				# Проверяем нужно ли переобучение ML
+				if total_updated >= 30:
+					st.info("🤖 Рекомендуется переобучить ML модель (много новых данных)")
+					if st.button("🚀 Переобучить модель"):
+						_retrain_ml_model()
+			else:
+				st.info("ℹ️ Новых данных не найдено")
+				
+	except ImportError:
+		st.error("❌ API клиент не найден. Убедитесь что etl/api_client.py доступен.")
+	except Exception as e:
+		st.error(f"❌ Ошибка синхронизации: {e}")
+
+
+def _retrain_ml_model():
+	"""Переобучение ML модели"""
+	try:
+		with st.spinner('Переобучение ML модели...'):
+			import subprocess
+			
+			# Экспортируем данные в CSV
+			from etl.build_views import export_to_csv_for_ml
+			if export_to_csv_for_ml():
+				# Запускаем обучение
+				result = subprocess.run([
+					'python', 'ml/training.py', 
+					'--csv', '/workspace/data/live_dataset.csv',
+					'--out', '/workspace/ml/artifacts'
+				], capture_output=True, text=True, cwd='/workspace')
+				
+				if result.returncode == 0:
+					st.success("✅ ML модель переобучена успешно!")
+					st.json(result.stdout)
+				else:
+					st.error(f"❌ Ошибка обучения: {result.stderr}")
+			else:
+				st.error("❌ Ошибка экспорта данных для ML")
+				
+	except Exception as e:
+		st.error(f"❌ Ошибка переобучения: {e}")
+
+
 def tab_restaurant_analysis():
 	st.header('Анализ ресторана')
+	
+	# Кнопка обновления данных
+	col1, col2 = st.columns([3, 1])
+	with col2:
+		if st.button('🔄 Обновить данные из API'):
+			_sync_restaurant_data()
+	
 	rest_df = _list_restaurants()
 	if rest_df.empty:
-		st.warning('Таблица restaurants пуста. Убедитесь, что SQLite доступна.')
+		st.warning('Таблица restaurants пуста. Убедитесь, что БД доступна.')
 		return
 	rest_map = {f"{row['name']} (ID {row['id']})": int(row['id']) for _, row in rest_df.iterrows()}
-	label = st.selectbox('Ресторан', list(rest_map.keys()))
+	
+	with col1:
+		label = st.selectbox('Ресторан', list(rest_map.keys()))
 	rest_id = rest_map[label]
+	rest_name = label.split(' (ID')[0]
 
 	presets = _period_presets()
 	preset = st.selectbox('Период (пресеты)', list(presets.keys()))
@@ -77,30 +167,38 @@ def tab_restaurant_analysis():
 
 
 def _aggregate_kpi(engine, start: date, end: date) -> dict:
-	start_s, end_s = start.strftime('%Y-%m-%d'), end.strftime('%Y-%m-%d')
-	q = lambda t: pd.read_sql_query(
-		f"SELECT SUM(sales) sales, SUM(orders) orders, SUM(ads_spend) ads_spend, SUM(ads_sales) ads_sales, AVG(rating) rating, SUM(cancelled_orders) canc FROM {t} WHERE stat_date BETWEEN ? AND ?",
-		engine, params=(start_s, end_s)
-	)
-	g = q('grab_stats').iloc[0].fillna(0)
-	j = q('gojek_stats').iloc[0].fillna(0)
-	sales = float(g['sales'] + j['sales'])
-	orders = float((g['orders'] or 0) + (j['orders'] or 0))
-	ads_spend = float(g['ads_spend'] + j['ads_spend'])
-	ads_sales = float(g['ads_sales'] + j['ads_sales'])
-	rating = float(((g['rating'] or 0) + (j['rating'] or 0)) / (2 if ((g['rating'] or 0) and (j['rating'] or 0)) else 1) or 0)
-	canc = float((g['canc'] or 0) + (j['canc'] or 0))
-	return {
-		'sales': sales,
-		'orders': orders,
-		'aov': (sales / orders) if orders else 0.0,
-		'ads_spend': ads_spend,
-		'ads_sales': ads_sales,
-		'roas': (ads_sales / ads_spend) if ads_spend else 0.0,
-		'rating': rating,
-		'cancels': canc,
-		'mer': (sales / ads_spend) if ads_spend else 0.0,
-	}
+	"""Получение KPI через адаптер данных"""
+	try:
+		from app.data_adapter import get_data_adapter
+		adapter = get_data_adapter()
+		start_s, end_s = start.strftime('%Y-%m-%d'), end.strftime('%Y-%m-%d')
+		return adapter.get_kpi_data(start_s, end_s)
+	except Exception:
+		# Fallback к старому способу
+		start_s, end_s = start.strftime('%Y-%m-%d'), end.strftime('%Y-%m-%d')
+		q = lambda t: pd.read_sql_query(
+			f"SELECT SUM(sales) sales, SUM(orders) orders, SUM(ads_spend) ads_spend, SUM(ads_sales) ads_sales, AVG(rating) rating, SUM(cancelled_orders) canc FROM {t} WHERE stat_date BETWEEN ? AND ?",
+			engine, params=(start_s, end_s)
+		)
+		g = q('grab_stats').iloc[0].fillna(0)
+		j = q('gojek_stats').iloc[0].fillna(0)
+		sales = float(g['sales'] + j['sales'])
+		orders = float((g['orders'] or 0) + (j['orders'] or 0))
+		ads_spend = float(g['ads_spend'] + j['ads_spend'])
+		ads_sales = float(g['ads_sales'] + j['ads_sales'])
+		rating = float(((g['rating'] or 0) + (j['rating'] or 0)) / (2 if ((g['rating'] or 0) and (j['rating'] or 0)) else 1) or 0)
+		canc = float((g['canc'] or 0) + (j['canc'] or 0))
+		return {
+			'sales': sales,
+			'orders': orders,
+			'aov': (sales / orders) if orders else 0.0,
+			'ads_spend': ads_spend,
+			'ads_sales': ads_sales,
+			'roas': (ads_sales / ads_spend) if ads_spend else 0.0,
+			'rating': rating,
+			'cancels': canc,
+			'mer': (sales / ads_spend) if ads_spend else 0.0,
+		}
 
 
 def _delta(a: float, b: float) -> float:
@@ -163,6 +261,10 @@ def tab_ai_query():
 def main():
 	st.set_page_config(page_title='Food Intelligence', layout='wide')
 	st.title('Food Intelligence — Аналитика продаж ресторанов')
+	
+	# Показываем статус данных
+	_show_data_status()
+	
 	tab1, tab2, tab3 = st.tabs(['Анализ ресторана', 'Анализ базы', 'Свободный запрос (AI)'])
 	with tab1:
 		tab_restaurant_analysis()
@@ -170,6 +272,24 @@ def main():
 		tab_base_analysis()
 	with tab3:
 		tab_ai_query()
+
+
+def _show_data_status():
+	"""Показ статуса данных в шапке"""
+	try:
+		from app.data_adapter import get_data_adapter
+		adapter = get_data_adapter()
+		status = adapter.get_data_status()
+		
+		if status.get("status") == "live":
+			st.success(f"🔄 Live данные: {status.get('restaurants')} ресторанов, последняя синхронизация: {status.get('last_sync', 'неизвестно')}")
+		elif status.get("status") == "static":
+			st.warning(f"📁 Статичные данные: {status.get('restaurants')} ресторанов. Для live данных настройте DATABASE_URL.")
+		else:
+			st.error("❌ Проблемы с данными. Проверьте подключение к БД.")
+			
+	except Exception:
+		st.info("📁 Используются локальные данные SQLite")
 
 
 if __name__ == '__main__':
