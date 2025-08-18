@@ -648,6 +648,11 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
                          for d in critical_dates)
         lines.append("")
         lines.append(f"💸 **ОБЩИЕ ПОТЕРИ ОТ ВСЕХ КРИТИЧЕСКИХ ДНЕЙ: {_fmt_idr(total_losses)}**")
+        
+        return "\n".join(lines)
+        
+    except Exception as e:
+        return f"8. 🚨 КРИТИЧЕСКИЕ ДНИ\n{'═' * 80}\n❌ Ошибка анализа: {str(e)}"
 
 
 def _check_holiday_by_date_simple(date_str):
@@ -695,21 +700,7 @@ def _check_holiday_by_date_simple(date_str):
         return f"8. 🚨 КРИТИЧЕСКИЕ ДНИ\n{'═' * 80}\n❌ Ошибка анализа: {str(e)}"
 
 
-            lines.append("В периоде нет дней с падением ≥ 30% к медиане.")
-            # Добавим краткий причинный срез по дождю/праздникам для периода
-            sub['heavy_rain'] = (sub['rain'].fillna(0.0) >= 10.0).astype(int)
-            def _mean(series):
-                s = pd.to_numeric(series, errors='coerce')
-                return float(s.mean()) if len(s) else 0.0
-            by_rain = sub.groupby('heavy_rain')['total_sales'].mean().to_dict()
-            if 0 in by_rain:
-                dr = (by_rain.get(1, by_rain[0]) - by_rain[0]) / (by_rain[0] or 1.0) * 100.0
-                lines.append(f"🌧️ Эффект дождя (простая разница средних): {_fmt_pct(dr)}")
-            by_h = sub.groupby(sub['is_holiday'].fillna(0).astype(int))['total_sales'].mean().to_dict()
-            if 0 in by_h:
-                dh = (by_h.get(1, by_h[0]) - by_h[0]) / (by_h[0] or 1.0) * 100.0
-                lines.append(f"🎌 Эффект праздников (простая разница средних): {_fmt_pct(dh)}")
-            return "\n".join(lines)
+
 
         # Prepare SHAP per-row
         model, features, background = load_artifacts()
