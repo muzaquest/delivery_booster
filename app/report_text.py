@@ -591,23 +591,78 @@ def _pretty_feature_name(name: str) -> str:
 
 
 def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
+    """
+    Новый раздел критических дней с глубокой аналитикой:
+    - Учет праздников и их влияния на продажи
+    - Анализ погодных факторов 
+    - ML-анализ без тривиальных факторов
+    - Конкретные рекомендации с ROI
+    """
     try:
         start_str, end_str = period.split("_")
-        df = pd.read_csv("/workspace/data/merged_dataset.csv", parse_dates=["date"])  # daily rows per restaurant
-        sub = df[(df["restaurant_id"] == restaurant_id) & (df["date"] >= start_str) & (df["date"] <= end_str)].copy()
+        
+        # Загружаем данные
+        try:
+            df = pd.read_csv("/workspace/data/merged_dataset.csv", parse_dates=["date"])
+            sub = df[(df["restaurant_id"] == restaurant_id) & (df["date"] >= start_str) & (df["date"] <= end_str)].copy()
+        except:
+            return "8. 🚨 КРИТИЧЕСКИЕ ДНИ\n" + ("═" * 80) + "\n❌ Данные для ML-анализа недоступны. Запустите обучение модели."
+        
         if sub.empty:
-            return "8. 🚨 КРИТИЧЕСКИЕ ДНИ (ML)\n" + ("—" * 72) + "\nНет данных за выбранный период."
+            return "8. 🚨 КРИТИЧЕСКИЕ ДНИ\n" + ("═" * 80) + "\n📊 Нет данных за выбранный период."
 
-        # Median per day and critical threshold (≤ -30% к медиане)
+        # Находим критические дни (падение ≥25% от медианы)
         daily = sub.groupby("date", as_index=False)["total_sales"].sum().sort_values("date")
-        med = float(daily["total_sales"].median()) if len(daily) else 0.0
-        thr = 0.7 * med
-        critical_dates = daily.loc[daily["total_sales"] <= thr, "date"].dt.normalize().tolist()
+        median_sales = float(daily["total_sales"].median()) if len(daily) else 0.0
+        threshold = 0.75 * median_sales  # 25% падение (менее строгий критерий)
+        critical_dates = daily.loc[daily["total_sales"] <= threshold, "date"].dt.normalize().tolist()
 
-        lines: list[str] = []
-        lines.append("8. 🚨 КРИТИЧЕСКИЕ ДНИ (ML)")
-        lines.append("—" * 72)
+        lines = []
+        lines.append("8. 🚨 КРИТИЧЕСКИЕ ДНИ")
+        lines.append("═" * 80)
+        
         if not critical_dates:
+            lines.append("✅ В периоде нет критических провалов продаж (падение >25% от медианы)")
+            lines.append("")
+            lines.append(f"📊 Медианные продажи: {_fmt_idr(median_sales)}")
+            
+            # Краткая сводка по внешним факторам
+            weather_impact = _analyze_weather_impact_period(sub)
+            holiday_impact = _analyze_holiday_impact_period(sub)
+            
+            if weather_impact['significant']:
+                lines.append(f"🌧️ Влияние погоды: {weather_impact['description']}")
+            if holiday_impact['significant']:
+                lines.append(f"🎌 Влияние праздников: {holiday_impact['description']}")
+                
+            return "\n".join(lines)
+
+        # Анализируем каждый критический день (максимум 5)
+        eng = get_engine()
+        for i, critical_date in enumerate(critical_dates[:5]):
+            if i > 0:
+                lines.append("")  # Разделитель между днями
+                
+            day_analysis = _analyze_critical_day_improved(
+                critical_date, sub, daily, median_sales, restaurant_id, start_str, end_str, eng
+            )
+            lines.extend(day_analysis)
+
+        # Общие выводы если больше 1 дня
+        if len(critical_dates) > 1:
+            lines.append("")
+            lines.append("📊 ОБЩИЕ ВЫВОДЫ")
+            lines.append("─" * 40)
+            
+            summary = _generate_period_summary_improved(critical_dates, sub, restaurant_id)
+            lines.extend(summary)
+
+        return "\n".join(lines)
+        
+    except Exception as e:
+        return f"8. 🚨 КРИТИЧЕСКИЕ ДНИ\n{'═' * 80}\n❌ Ошибка анализа: {str(e)}"
+
+
             lines.append("В периоде нет дней с падением ≥ 30% к медиане.")
             # Добавим краткий причинный срез по дождю/праздникам для периода
             sub['heavy_rain'] = (sub['rain'].fillna(0.0) >= 10.0).astype(int)
