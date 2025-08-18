@@ -591,55 +591,362 @@ def _pretty_feature_name(name: str) -> str:
     return pretty
 
 
+# Пороговые значения для стабилизации раздела 8
+MIN_NEG_SHARE = 0.02  # Минимальная доля негативного вклада (2%)
+MIN_NEG_IDR = 100000  # Минимальный вклад в IDR (100K IDR)
+REPORT_STRICT_MODE = True  # Строгий режим: требует минимум данных
+
+def _normalize_feature_name(feature: str) -> str:
+    """Нормализация названий фич в человекочитаемые"""
+    # Объединяем дублеры времени приготовления
+    if any(x in feature.lower() for x in ['prep_time', 'preparation_time']):
+        return "Время приготовления"
+    
+    # Объединяем погодные лаги
+    if any(x in feature.lower() for x in ['humidity_lag', 'wind_lag', 'temp_lag', 'rain_lag']):
+        weather_type = ""
+        if 'humidity' in feature.lower():
+            weather_type = "влажность"
+        elif 'wind' in feature.lower():
+            weather_type = "ветер"
+        elif 'temp' in feature.lower():
+            weather_type = "температура"
+        elif 'rain' in feature.lower():
+            weather_type = "дождь"
+        return f"Погода: {weather_type} (предыдущие дни)"
+    
+    # Текущие погодные условия
+    if feature.lower() in ['rain', 'humidity', 'wind', 'temp', 'temperature']:
+        weather_map = {
+            'rain': 'Дождь',
+            'humidity': 'Влажность',
+            'wind': 'Ветер',
+            'temp': 'Температура',
+            'temperature': 'Температура'
+        }
+        return f"Погода: {weather_map.get(feature.lower(), feature)}"
+    
+    # Маркетинговые метрики
+    marketing_map = {
+        'ads_spend': 'Рекламный бюджет',
+        'ads_sales': 'Рекламные продажи',
+        'roas': 'ROAS',
+        'grab_ads_spend': 'GRAB: рекламный бюджет',
+        'gojek_ads_spend': 'GOJEK: рекламный бюджет',
+        'grab_roas': 'GRAB: ROAS',
+        'gojek_roas': 'GOJEK: ROAS'
+    }
+    
+    for key, value in marketing_map.items():
+        if key in feature.lower():
+            return value
+    
+    # Операционные метрики
+    ops_map = {
+        'confirm_time': 'Время подтверждения',
+        'delivery_time': 'Время доставки',
+        'rating': 'Рейтинг',
+        'cancelled_orders': 'Отмены',
+        'lost_orders': 'Потери'
+    }
+    
+    for key, value in ops_map.items():
+        if key in feature.lower():
+            return value
+    
+    # Возвращаем исходное название если не нашли соответствие
+    return _pretty_feature_name(feature)
+
+
 def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
+    """Улучшенный раздел 8 с пороговыми значениями и строгой фильтрацией"""
     try:
         start_str, end_str = period.split("_")
-        df = pd.read_csv("/workspace/data/merged_dataset.csv", parse_dates=["date"])  # daily rows per restaurant
+        df = pd.read_csv("/workspace/data/merged_dataset.csv", parse_dates=["date"])
         sub = df[(df["restaurant_id"] == restaurant_id) & (df["date"] >= start_str) & (df["date"] <= end_str)].copy()
+        
         if sub.empty:
-            return "8. 🚨 КРИТИЧЕСКИЕ ДНИ (ML)\n" + ("—" * 72) + "\nНет данных за выбранный период."
+            return "8. 🚨 КРИТИЧЕСКИЕ ДНИ\n════════════════════════════════════════════════════════════════════════\nНет данных за выбранный период."
+        
+        # Строгий режим: проверяем достаточность данных
+        if REPORT_STRICT_MODE and len(sub) < 7:
+            return "8. 🚨 КРИТИЧЕСКИЕ ДНИ\n════════════════════════════════════════════════════════════════════════\nДанных недостаточно для анализа (минимум 7 дней)."
 
-        # Median per day and critical threshold (≤ -30% к медиане)
+        # Находим критические дни (падение ≥30% от медианы)
         daily = sub.groupby("date", as_index=False)["total_sales"].sum().sort_values("date")
-        med = float(daily["total_sales"].median()) if len(daily) else 0.0
-        thr = 0.7 * med
-        critical_dates = daily.loc[daily["total_sales"] <= thr, "date"].dt.normalize().tolist()
+        median_sales = float(daily["total_sales"].median()) if len(daily) else 0.0
+        threshold = 0.70 * median_sales  # 30% падение от медианы
+        critical_dates = daily.loc[daily["total_sales"] <= threshold, "date"].dt.normalize().tolist()
+        critical_dates = sorted(critical_dates, key=lambda d: daily.loc[daily["date"] == d, "total_sales"].iloc[0])
 
         lines: list[str] = []
-        lines.append("8. 🚨 КРИТИЧЕСКИЕ ДНИ (ML)")
-        lines.append("—" * 72)
-        def _expected_baseline_for_day(daily_df: pd.DataFrame, d: pd.Timestamp) -> float:
-            try:
-                dow = int(d.dayofweek)
-                window = daily_df[daily_df['date'] < d].tail(56)
-                same_dow = window[window['date'].dt.dayofweek == dow]
-                series = same_dow['total_sales'] if not same_dow.empty else window['total_sales']
-                if series.empty:
-                    series = daily_df['total_sales']
-                return float(series.median()) if not series.empty else 0.0
-            except Exception:
-                return 0.0
+        lines.append("8. 🚨 КРИТИЧЕСКИЕ ДНИ")
+        lines.append("════════════════════════════════════════════════════════════════════════")
+        
+        # Заголовок с основной статистикой
+        lines.append(f"📊 Найдено критических дней (падение ≥30%): {len(critical_dates)} из {len(daily)} ({len(critical_dates)/len(daily)*100:.1f}%)")
+        lines.append(f"📈 Медианные продажи: {_fmt_idr(median_sales)}")
+        lines.append(f"📉 Порог критичности: {_fmt_idr(threshold)}")
+        
         if not critical_dates:
-            lines.append("В периоде нет дней с падением ≥ 30% к медиане.")
-            # Добавим краткий причинный срез по дождю/праздникам для периода
-            sub['heavy_rain'] = (sub['rain'].fillna(0.0) >= 10.0).astype(int)
-            def _mean(series):
-                s = pd.to_numeric(series, errors='coerce')
-                return float(s.mean()) if len(s) else 0.0
-            by_rain = sub.groupby('heavy_rain')['total_sales'].mean().to_dict()
-            if 0 in by_rain:
-                dr = (by_rain.get(1, by_rain[0]) - by_rain[0]) / (by_rain[0] or 1.0) * 100.0
-                lines.append(f"🌧️ Эффект дождя (простая разница средних): {_fmt_pct(dr)}")
-            by_h = sub.groupby(sub['is_holiday'].fillna(0).astype(int))['total_sales'].mean().to_dict()
-            if 0 in by_h:
-                dh = (by_h.get(1, by_h[0]) - by_h[0]) / (by_h[0] or 1.0) * 100.0
-                lines.append(f"🎌 Эффект праздников (простая разница средних): {_fmt_pct(dh)}")
-            return "\n".join(lines)
-
-        # Prepare SHAP per-row
-        model, features, background = load_artifacts()
-        X = sub[features]
-        pre = model.named_steps["pre"]
+            lines.append("")
+            lines.append("✅ В периоде нет критических дней (падение ≥30%)")
+            return "\\n".join(lines)
+        
+        # Подсчитываем общие потери
+        total_losses = 0.0
+        for critical_date in critical_dates:
+            day_sales = daily.loc[daily["date"] == critical_date, "total_sales"].iloc[0]
+            loss = max(median_sales - day_sales, 0)
+            total_losses += loss
+        
+        lines.append(f"💸 Общие потери от критических дней: {_fmt_idr(total_losses)}")
+        lines.append("")
+        
+        def _analyze_critical_day_improved(critical_date: pd.Timestamp) -> list[str]:
+            """Улучшенный анализ критического дня с пороговыми значениями"""
+            day_lines = []
+            
+            # Получаем данные дня
+            day_data = sub[sub["date"] == critical_date].iloc[0] if not sub[sub["date"] == critical_date].empty else None
+            if day_data is None:
+                return [f"🔴 {critical_date.strftime('%Y-%m-%d')}: нет данных"]
+            
+            day_sales = float(day_data["total_sales"])
+            loss_amount = max(median_sales - day_sales, 0)
+            loss_pct = ((day_sales - median_sales) / median_sales * 100) if median_sales > 0 else 0
+            
+            day_lines.append(f"🔴 {critical_date.strftime('%Y-%m-%d')}")
+            day_lines.append("")
+            
+            # Ключевые цифры
+            day_lines.append("### 📊 **КЛЮЧЕВЫЕ ЦИФРЫ**")
+            day_lines.append(f"- **Продажи:** {_fmt_idr(day_sales)} (медиана: {_fmt_idr(median_sales)}) → **{loss_pct:+.1f}%**")
+            day_lines.append(f"- **Потери:** {_fmt_idr(loss_amount)}")
+            
+            # Получаем заказы и средний чек если есть
+            orders = day_data.get("orders_count", 0) or 0
+            if orders > 0:
+                avg_check = day_sales / orders
+                day_lines.append(f"- **Заказы:** {orders} шт")
+                day_lines.append(f"- **Средний чек:** {_fmt_idr(avg_check)}")
+            
+            day_lines.append("")
+            
+            # ML анализ причин с пороговыми значениями
+            try:
+                model, features, background = load_artifacts()
+                if model is None or not features:
+                    if REPORT_STRICT_MODE:
+                        day_lines.append("### ⚠️ **АНАЛИЗ НЕДОСТУПЕН**")
+                        day_lines.append("ML модель не обучена. Запустите обучение для получения детального анализа.")
+                        return day_lines
+                
+                # Получаем SHAP значения для дня
+                day_features = day_data[features] if all(f in day_data.index for f in features) else None
+                if day_features is None:
+                    if REPORT_STRICT_MODE:
+                        day_lines.append("### ⚠️ **ДАННЫХ НЕДОСТАТОЧНО**")
+                        day_lines.append("Отсутствуют необходимые features для ML анализа.")
+                        return day_lines
+                
+                X_day = day_features.values.reshape(1, -1)
+                pre = model.named_steps["pre"]
+                mdl = model.named_steps["model"]
+                X_pre = pre.transform(X_day)
+                
+                if background is not None and not background.empty:
+                    bg_pre = pre.transform(background[features])
+                    explainer = shap.TreeExplainer(mdl, data=bg_pre, feature_perturbation="interventional")
+                else:
+                    explainer = shap.TreeExplainer(mdl, feature_perturbation="interventional")
+                
+                shap_values = explainer.shap_values(X_pre)[0]
+                
+                # Фильтруем негативные факторы по пороговым значениям
+                negative_factors = []
+                positive_factors = []
+                
+                for i, (feature, shap_val) in enumerate(zip(features, shap_values)):
+                    if shap_val < 0:  # Негативный вклад
+                        contribution_idr = abs(shap_val)
+                        contribution_share = abs(shap_val) / loss_amount if loss_amount > 0 else 0
+                        
+                        # Применяем пороговые значения
+                        if contribution_share >= MIN_NEG_SHARE and contribution_idr >= MIN_NEG_IDR:
+                            normalized_name = _normalize_feature_name(feature)
+                            negative_factors.append((normalized_name, contribution_idr, contribution_share * 100))
+                    
+                    elif shap_val > 0:  # Позитивный вклад (что помогло)
+                        contribution_idr = shap_val
+                        normalized_name = _normalize_feature_name(feature)
+                        positive_factors.append((normalized_name, contribution_idr))
+                
+                # Сортируем по вкладу и берем топ-5
+                negative_factors.sort(key=lambda x: x[1], reverse=True)
+                negative_factors = negative_factors[:5]
+                
+                positive_factors.sort(key=lambda x: x[1], reverse=True)
+                positive_factors = positive_factors[:3]  # Топ-3 помогающих фактора
+                
+                # Строгий режим: проверяем достаточность факторов
+                if REPORT_STRICT_MODE and len(negative_factors) < 2:
+                    day_lines.append("### ⚠️ **ДАННЫХ НЕДОСТАТОЧНО**")
+                    day_lines.append("Найдено менее 2 значимых факторов. ML анализ неточен.")
+                    return day_lines
+                
+                # Реальные причины
+                day_lines.append("### 🔍 **РЕАЛЬНЫЕ ПРИЧИНЫ**")
+                
+                for i, (factor_name, contribution_idr, contribution_pct) in enumerate(negative_factors, 1):
+                    priority = "🔴" if contribution_pct >= 15.0 else ("🟡" if contribution_pct >= 7.0 else "🟢")
+                    day_lines.append(f"**{i}. {priority} {factor_name.upper()}**")
+                    day_lines.append(f"- **Влияние:** {_fmt_idr(contribution_idr)} ({contribution_pct:.1f}% от потерь)")
+                    day_lines.append("")
+                
+                # Внешние факторы (праздники и погода) только если превышают пороги
+                day_lines.append("### 🌍 **ВНЕШНИЕ ФАКТОРЫ**")
+                
+                # Праздники - только если holiday_flag==1 и вклад >= порога
+                is_holiday = int(day_data.get("is_holiday", 0)) == 1
+                holiday_contribution = 0
+                
+                # Ищем вклад праздника в негативных факторах
+                for factor_name, contribution_idr, contribution_pct in negative_factors:
+                    if "праздник" in factor_name.lower() or "holiday" in factor_name.lower():
+                        holiday_contribution = contribution_idr
+                        break
+                
+                if is_holiday and holiday_contribution >= MIN_NEG_IDR:
+                    holiday_info = _check_holiday_by_date_simple(critical_date.strftime('%Y-%m-%d'))
+                    day_lines.append(f"**🕌 Праздники:** {holiday_info}")
+                elif is_holiday:
+                    holiday_info = _check_holiday_by_date_simple(critical_date.strftime('%Y-%m-%d'))
+                    day_lines.append(f"**🕌 Праздники:** {holiday_info} (влияние незначительное)")
+                else:
+                    day_lines.append("**🕌 Праздники:** обычный день")
+                
+                # Дождь - только если rain_mm >= 2.0 и вклад >= порога
+                rain_mm = float(day_data.get("rain", 0)) if pd.notna(day_data.get("rain")) else 0.0
+                rain_contribution = 0
+                
+                # Ищем вклад дождя в негативных факторах
+                for factor_name, contribution_idr, contribution_pct in negative_factors:
+                    if "дождь" in factor_name.lower() or "rain" in factor_name.lower():
+                        rain_contribution = contribution_idr
+                        break
+                
+                if rain_mm >= 2.0 and rain_contribution >= MIN_NEG_IDR:
+                    rain_desc = "сильный дождь" if rain_mm >= 10.0 else "дождь"
+                    day_lines.append(f"**🌧️ Погода:** {rain_desc} {rain_mm:.1f}мм — снизил активность курьеров")
+                elif rain_mm >= 2.0:
+                    day_lines.append(f"**🌧️ Погода:** дождь {rain_mm:.1f}мм (влияние незначительное)")
+                else:
+                    temp = day_data.get("temp", 0) or 0
+                    day_lines.append(f"**🌧️ Погода:** без дождя, комфортная температура {temp}°C")
+                
+                day_lines.append("")
+                
+                # Что помогло избежать больших потерь (позитивные факторы)
+                if positive_factors:
+                    day_lines.append("### ✅ **ЧТО ПОМОГЛО ИЗБЕЖАТЬ БОЛЬШИХ ПОТЕРЬ**")
+                    for factor_name, contribution_idr in positive_factors:
+                        day_lines.append(f"**💪 {factor_name}:**")
+                        day_lines.append(f"- Положительный эффект: +{_fmt_idr(contribution_idr)}")
+                    day_lines.append("")
+                
+                # Конкретные рекомендации с финансовым эффектом
+                day_lines.append("### 🎯 **КОНКРЕТНЫЕ РЕКОМЕНДАЦИИ**")
+                
+                recommendations = []
+                total_potential = 0
+                
+                for i, (factor_name, contribution_idr, contribution_pct) in enumerate(negative_factors[:3], 1):
+                    priority = "🔴" if contribution_pct >= 15.0 else ("🟡" if contribution_pct >= 7.0 else "🟢")
+                    
+                    # Генерируем рекомендации на основе типа фактора
+                    if "бюджет" in factor_name.lower():
+                        rec_effect = contribution_idr * 0.8  # 80% восстановления
+                        recommendations.append(f"**{i}. {priority} Оптимизировать рекламный бюджет**")
+                        recommendations.append(f"- **Потенциальный эффект:** {_fmt_idr(rec_effect)}")
+                        total_potential += rec_effect
+                    elif "время" in factor_name.lower():
+                        rec_effect = contribution_idr * 0.6  # 60% восстановления
+                        recommendations.append(f"**{i}. {priority} Ускорить операционные процессы**")
+                        recommendations.append(f"- **Потенциальный эффект:** {_fmt_idr(rec_effect)}")
+                        total_potential += rec_effect
+                    elif "рейтинг" in factor_name.lower():
+                        rec_effect = contribution_idr * 0.7  # 70% восстановления
+                        recommendations.append(f"**{i}. {priority} Улучшить качество сервиса**")
+                        recommendations.append(f"- **Потенциальный эффект:** {_fmt_idr(rec_effect)}")
+                        total_potential += rec_effect
+                    else:
+                        rec_effect = contribution_idr * 0.5  # 50% восстановления по умолчанию
+                        recommendations.append(f"**{i}. {priority} Исправить {factor_name.lower()}**")
+                        recommendations.append(f"- **Потенциальный эффект:** {_fmt_idr(rec_effect)}")
+                        total_potential += rec_effect
+                
+                for rec in recommendations:
+                    day_lines.append(rec)
+                
+                day_lines.append("")
+                day_lines.append("### 💰 **ФИНАНСОВЫЙ ИТОГ**")
+                recovery_pct = (total_potential / loss_amount * 100) if loss_amount > 0 else 0
+                day_lines.append(f"- **Общий потенциал восстановления:** {_fmt_idr(total_potential)} ({recovery_pct:.0f}% от потерь)")
+                day_lines.append("")
+                
+            except Exception as e:
+                if REPORT_STRICT_MODE:
+                    day_lines.append("### ⚠️ **ML АНАЛИЗ НЕДОСТУПЕН**")
+                    day_lines.append(f"Ошибка ML анализа: {str(e)}")
+                    day_lines.append("Используйте базовый анализ или переобучите модель.")
+                    day_lines.append("")
+            
+            return day_lines
+        
+        # Анализируем ВСЕ критические дни с новой логикой
+        for critical_date in critical_dates:
+            day_analysis = _analyze_critical_day_improved(critical_date)
+            lines.extend(day_analysis)
+        
+        # Общие выводы
+        lines.append(f"💸 **ОБЩИЕ ПОТЕРИ ОТ ВСЕХ КРИТИЧЕСКИХ ДНЕЙ: {_fmt_idr(total_losses)}**")
+        lines.append("")
+        
+        lines.append("📊 ОБЩИЕ ВЫВОДЫ")
+        lines.append("────────────────────────────────────────")
+        lines.append(f"📊 Всего критических дней: {len(critical_dates)} из {len(daily)} ({len(critical_dates)/len(daily)*100:.1f}%)")
+        
+        # Анализ типов критических дней
+        holiday_days = 0
+        rainy_days = 0
+        avg_loss = total_losses / len(critical_dates) if critical_dates else 0
+        
+        for critical_date in critical_dates:
+            day_data = sub[sub["date"] == critical_date].iloc[0] if not sub[sub["date"] == critical_date].empty else None
+            if day_data is not None:
+                if int(day_data.get("is_holiday", 0)) == 1:
+                    holiday_days += 1
+                if float(day_data.get("rain", 0) or 0) >= 2.0:
+                    rainy_days += 1
+        
+        lines.append(f"🕌 Праздничных дней: {holiday_days} ({holiday_days/len(critical_dates)*100:.0f}%)")
+        lines.append(f"🌧️ Дождливых дней: ~{rainy_days} ({rainy_days/len(critical_dates)*100:.0f}%)")
+        lines.append(f"📈 Средние потери на критический день: {_fmt_idr(avg_loss)}")
+        lines.append("")
+        lines.append("🎯 ПРИОРИТЕТНАЯ РЕКОМЕНДАЦИЯ:")
+        lines.append("Разработать стратегию работы в праздничные и дождливые дни")
+        lines.append("")
+        lines.append("📋 ИСТОЧНИКИ ДАННЫХ:")
+        lines.append("- SQLite (grab_stats, gojek_stats) — операционные данные")
+        lines.append("- Open-Meteo API — погодные данные")
+        lines.append("- Holidays cache — праздники (мусульманские, балийские, индонезийские, международные)")
+        lines.append("- ML модель (Random Forest) — SHAP анализ факторов")
+        
+        return "\\n".join(lines)
+    
+    except Exception:
+        return "8. 🚨 КРИТИЧЕСКИЕ ДНИ\\n════════════════════════════════════════════════════════════════════════\\nНе удалось построить раздел (ошибка обработки данных)."
         mdl = model.named_steps["model"]
         X_pre = pre.transform(X)
         try:
