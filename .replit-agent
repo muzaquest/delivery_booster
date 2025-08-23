@@ -1,0 +1,7 @@
+agent:
+  language: python
+  entrypoint: streamlit_app.py
+  features:
+    - code-editing
+    - database
+    - webserver
