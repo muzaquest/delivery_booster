@@ -1,2 +1,30 @@
-run = "uvicorn app.main:app --host 0.0.0.0 --port 8000 & streamlit run streamlit_app.py --server.address=0.0.0.0 --server.port=3000"
-language = "python3"
+modules = ["python-3.11"]
+
+[nix]
+channel = "stable-22_11"
+
+[workflows]
+runButton = "Project"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Start Delivery Booster"
+
+[workflows.workflow.tasks.preview]
+port = 3000
+
+[deployment]
+run = ["bash", "-lc", "uvicorn app.main:app --host 0.0.0.0 --port 8000 & streamlit run streamlit_app.py --server.address=0.0.0.0 --server.port=3000"]
+deploymentTarget = "cloudrun"
+
+[[ports]]
+localPort = 3000
+externalPort = 80
+
+[env]
+PYTHONPATH = "$PYTHONPATH:."
