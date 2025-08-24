@@ -14,7 +14,7 @@ from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 
-ARTIFACT_DIR = os.getenv("ML_ARTIFACT_DIR", "/workspace/ml/artifacts")
+ARTIFACT_DIR = os.getenv("ML_ARTIFACT_DIR", os.path.join(os.getenv("PROJECT_ROOT", os.getcwd()), "ml", "artifacts"))
 
 _CACHE: Dict[str, tuple] = {}
 

@@ -61,23 +61,25 @@ python db/init_db.py
 
 ## ETL
 
-- SQLite-источник: `/workspace/database.sqlite`
-- Турпоток (Excel): `/workspace/1.-Data-Kunjungan-2025-3.xls`, `/workspace/Table-1-7-Final-1-1.xls`
-- Fake orders: файл `/workspace/Fake orders` содержит Google Sheet ссылку; либо передайте `--fake-orders-sheet`.
+- SQLite-источник: переменная `SQLITE_PATH` (по умолчанию `$PROJECT_ROOT/database.sqlite`)
+- Турпоток (Excel): храните файлы в репозитории и передавайте пути через CLI/переменные окружения; примеры: `$PROJECT_ROOT/1.-Data-Kunjungan-2025-3.xls`, `$PROJECT_ROOT/Table-1-7-Final-1-1.xls`.
+- Fake orders: файл `$PROJECT_ROOT/Fake orders` содержит Google Sheet ссылку; либо передайте `--fake-orders-sheet`.
 
 Сборка объединённого датасета:
 
 ```bash
+export PROJECT_ROOT=$PWD
 python etl/data_loader.py --run \
   --start 2023-01-01 --end 2025-12-31 \
-  --out /workspace/data/merged_dataset.csv \
-  --excel /workspace/1.-Data-Kunjungan-2025-3.xls /workspace/Table-1-7-Final-1-1.xls
+  --out "$PROJECT_ROOT/data/merged_dataset.csv" \
+  --excel "$PROJECT_ROOT/1.-Data-Kunjungan-2025-3.xls" "$PROJECT_ROOT/Table-1-7-Final-1-1.xls"
 ```
 
 ## Обучение ML-модели и объяснимость (SHAP)
 
 ```bash
-python ml/training.py --csv /workspace/data/merged_dataset.csv --out /workspace/ml/artifacts
+export PROJECT_ROOT=$PWD
+python ml/training.py --csv "$PROJECT_ROOT/data/merged_dataset.csv" --out "$PROJECT_ROOT/ml/artifacts"
 ```
 
 - Модели: LightGBM и RandomForest (выбираем чемпиона по MAE)
@@ -103,13 +105,17 @@ pytest -q
 1) Импортируйте репозиторий в Replit.
 2) В Secrets (Environment) задайте при необходимости:
    - `GOOGLE_API_KEY` — для Google Sheets с фейковыми заказами
-   - `SQLITE_PATH` — путь к SQLite (по умолчанию `/workspace/database.sqlite`)
+   - `SQLITE_PATH` — путь к SQLite (по умолчанию `$PROJECT_ROOT/database.sqlite`)
    - `DATABASE_URL`/`POSTGRES_*` — если используете внешнюю PostgreSQL
 3) Первый запуск: выполните ETL и обучение, затем старт сервера и UI:
 
 ```bash
-python etl/data_loader.py --run --start 2023-01-01 --end 2025-12-31 --out /workspace/data/merged_dataset.csv
-python ml/training.py --csv /workspace/data/merged_dataset.csv --out /workspace/ml/artifacts
+export PROJECT_ROOT=$PWD
+export SQLITE_PATH=$PWD/database.sqlite
+export ML_ARTIFACT_DIR=$PWD/ml/artifacts
+export ML_DATASET_CSV=$PWD/data/merged_dataset.csv
+python etl/data_loader.py --run --start 2023-01-01 --end 2025-12-31 --out "$ML_DATASET_CSV"
+python ml/training.py --csv "$ML_DATASET_CSV" --out "$ML_ARTIFACT_DIR"
 uvicorn app.main:app --host 0.0.0.0 --port 8000 &
 streamlit run streamlit_app.py --server.port=8501 --server.address=0.0.0.0
 ```

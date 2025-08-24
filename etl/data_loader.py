@@ -37,9 +37,10 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.sql import and_
 
 from config import get_env
+import os
 
 
-DEFAULT_SQLITE_PATH = get_env("SQLITE_PATH", "/workspace/database.sqlite")
+DEFAULT_SQLITE_PATH = get_env("SQLITE_PATH", os.path.join(get_env("PROJECT_ROOT", os.getcwd()), "database.sqlite"))
 OPEN_METEO_ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/era5"
 OPEN_METEO_FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 

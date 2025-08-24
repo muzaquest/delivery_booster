@@ -6,7 +6,9 @@ from typing import Optional
 import pandas as pd
 import streamlit as st
 
-sys.path.append('/workspace')
+PROJECT_ROOT = os.getenv("PROJECT_ROOT", os.getcwd())
+if PROJECT_ROOT not in sys.path:
+	sys.path.append(PROJECT_ROOT)
 
 from etl.data_loader import get_engine
 from app.report_text import generate_full_report
@@ -20,13 +22,13 @@ def _list_restaurants() -> pd.DataFrame:
 		return adapter.get_restaurants_list()
 	except Exception:
 		# Fallback к старому способу
-		eng = get_engine('/workspace/database.sqlite')
+		eng = get_engine()
 		df = pd.read_sql_query('SELECT id, name FROM restaurants ORDER BY name', eng)
 		return df
 
 
 def _ensure_reports_dir() -> str:
-	dir_path = os.path.join('/workspace', 'reports')
+	dir_path = os.path.join(PROJECT_ROOT, 'reports')
 	os.makedirs(dir_path, exist_ok=True)
 	return dir_path
 
@@ -101,13 +103,15 @@ def _retrain_ml_model():
 			
 			# Экспортируем данные в CSV
 			from etl.build_views import export_to_csv_for_ml
-			if export_to_csv_for_ml():
+			live_csv = os.getenv('ML_DATASET_LIVE_PATH', os.path.join(PROJECT_ROOT, 'data', 'live_dataset.csv'))
+			artifact_dir = os.getenv('ML_ARTIFACT_DIR', os.path.join(PROJECT_ROOT, 'ml', 'artifacts'))
+			if export_to_csv_for_ml(live_csv):
 				# Запускаем обучение
 				result = subprocess.run([
-					'python', 'ml/training.py', 
-					'--csv', '/workspace/data/live_dataset.csv',
-					'--out', '/workspace/ml/artifacts'
-				], capture_output=True, text=True, cwd='/workspace')
+					'python', os.path.join('ml', 'training.py'), 
+					'--csv', live_csv,
+					'--out', artifact_dir
+				], capture_output=True, text=True, cwd=PROJECT_ROOT)
 				
 				if result.returncode == 0:
 					st.success("✅ ML модель переобучена успешно!")
@@ -209,7 +213,7 @@ def _delta(a: float, b: float) -> float:
 
 def tab_base_analysis():
 	st.header('Анализ базы (KPI)')
-	eng = get_engine('/workspace/database.sqlite')
+	eng = get_engine()
 	presets = _period_presets()
 	preset = st.selectbox('Период (пресеты)', list(presets.keys()))
 	start_default, end_default = presets[preset]
@@ -328,13 +332,14 @@ def tab_ai_query():
 			
 			# Проверяем ML модель
 			import os
-			if os.path.exists('/workspace/ml/artifacts/model.joblib'):
+			artifact_dir = os.getenv('ML_ARTIFACT_DIR', os.path.join(PROJECT_ROOT, 'ml', 'artifacts'))
+			if os.path.exists(os.path.join(artifact_dir, 'model.joblib')):
 				st.success("✅ ML модель готова для анализа")
 			else:
 				st.warning("⚠️ ML модель не обучена. Запустите обучение для точного анализа.")
 			
 			# Проверяем праздники
-			if os.path.exists('/workspace/etl/holidays_loader.py'):
+			if os.path.exists(os.path.join(PROJECT_ROOT, 'etl', 'holidays_loader.py')):
 				st.success("✅ Система праздников готова (233 праздника)")
 			
 		except Exception as e:

@@ -219,7 +219,9 @@ class DataAdapter:
         else:
             # Пытаемся использовать существующий CSV
             try:
-                df = pd.read_csv("/workspace/data/merged_dataset.csv", parse_dates=["date"])
+                import os
+                dataset_path = os.getenv("ML_DATASET_CSV", os.path.join(os.getenv("PROJECT_ROOT", os.getcwd()), "data", "merged_dataset.csv"))
+                df = pd.read_csv(dataset_path, parse_dates=["date"])
                 mask = (df["restaurant_id"] == restaurant_id) & \
                        (df["date"] >= start_date) & (df["date"] <= end_date)
                 return df.loc[mask].copy()

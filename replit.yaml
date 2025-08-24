@@ -1,4 +1,4 @@
-run: 
-  command: uvicorn app.main:app --host 0.0.0.0 --port 8000 & streamlit run streamlit_app.py --server.address=0.0.0.0 --server.port=3000
+run:
+  command: PROJECT_ROOT=$PWD ML_ARTIFACT_DIR=$PWD/ml/artifacts ML_DATASET_CSV=$PWD/data/merged_dataset.csv SQLITE_PATH=$PWD/database.sqlite uvicorn app.main:app --host 0.0.0.0 --port 8000 & streamlit run streamlit_app.py --server.address=0.0.0.0 --server.port=3000
 language: python3
 entrypoint: streamlit_app.py
