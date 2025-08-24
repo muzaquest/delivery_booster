@@ -32,7 +32,7 @@ async def _warmup_model() -> None:
 async def ml_status() -> dict:
     try:
         # Load metrics
-        metrics_path = os.getenv("ML_ARTIFACT_DIR", "/workspace/ml/artifacts")
+        metrics_path = os.getenv("ML_ARTIFACT_DIR", os.path.join(os.getenv("PROJECT_ROOT", os.getcwd()), "ml", "artifacts"))
         mfile = os.path.join(metrics_path, "metrics.json")
         cfile = os.path.join(metrics_path, "champion.json")
         metrics = {}
@@ -69,7 +69,7 @@ async def report(period: str = Query(..., description="YYYY-MM-DD_YYYY-MM-DD"), 
         return {"error": "Invalid period format. Use YYYY-MM-DD_YYYY-MM-DD"}
 
     # Load merged dataset
-    csv_path = "/workspace/data/merged_dataset.csv"
+    csv_path = os.getenv("ML_DATASET_CSV", os.path.join(os.getenv("PROJECT_ROOT", os.getcwd()), "data", "merged_dataset.csv"))
     try:
         df = pd.read_csv(csv_path, parse_dates=["date"])
     except Exception:
@@ -115,7 +115,7 @@ async def factors(period: str = Query(..., description="YYYY-MM-DD_YYYY-MM-DD"),
     except Exception:
         return {"error": "Invalid period format. Use YYYY-MM-DD_YYYY-MM-DD"}
 
-    csv_path = "/workspace/data/merged_dataset.csv"
+    csv_path = os.getenv("ML_DATASET_CSV", os.path.join(os.getenv("PROJECT_ROOT", os.getcwd()), "data", "merged_dataset.csv"))
     try:
         df = pd.read_csv(csv_path, parse_dates=["date"])
     except Exception:

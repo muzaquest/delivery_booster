@@ -18,16 +18,18 @@ from psycopg2.extras import execute_values, RealDictCursor
 # Конфигурация
 API_BASE = os.getenv("STATS_API_BASE", "http://5.187.7.140:3000")
 DB_DSN = os.getenv("DATABASE_URL")
+PROJECT_ROOT = os.getenv("PROJECT_ROOT", os.getcwd())
 TIMEOUT = 15  # секунд
 RETRIES = 3
 CHUNK_DAYS = 14
 
 # Настройка логирования
+os.makedirs(os.path.join(PROJECT_ROOT, 'logs'), exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('/workspace/logs/api_client.log'),
+        logging.FileHandler(os.path.join(PROJECT_ROOT, 'logs', 'api_client.log')),
         logging.StreamHandler()
     ]
 )

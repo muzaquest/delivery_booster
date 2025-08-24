@@ -18,6 +18,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 DB_DSN = os.getenv("DATABASE_URL")
+PROJECT_ROOT = os.getenv("PROJECT_ROOT", os.getcwd())
 
 
 def create_daily_facts_view():
@@ -210,7 +211,7 @@ def build_all_views():
     return success
 
 
-def export_to_csv_for_ml(output_path: str = "/workspace/data/live_dataset.csv"):
+def export_to_csv_for_ml(output_path: str = None):
     """Экспорт ml_dataset в CSV для совместимости с существующим ML кодом"""
     
     try:
@@ -264,6 +265,9 @@ def export_to_csv_for_ml(output_path: str = "/workspace/data/live_dataset.csv"):
             
             df = pd.read_sql_query(query, conn)
             
+            # Путь назначения
+            if not output_path:
+                output_path = os.getenv("ML_DATASET_LIVE_PATH", os.path.join(PROJECT_ROOT, 'data', 'live_dataset.csv'))
             # Создаем директорию если нужно
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
             
