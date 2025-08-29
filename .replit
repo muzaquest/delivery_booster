@@ -1,7 +1,8 @@
-modules = ["python-3.11"]
+modules = ["bash", "python-3.11"]
 
 [nix]
-channel = "stable-22_11"
+channel = "stable-25_05"
+packages = ["glibcLocales", "ocl-icd", "opencl-headers", "sqlite"]
 
 [workflows]
 runButton = "Project"
@@ -15,16 +16,36 @@ author = "agent"
 task = "workflow.run"
 args = "Start Delivery Booster"
 
-[workflows.workflow.tasks.preview]
-port = 3000
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Restaurant Analytics Platform"
+
+[[workflows.workflow]]
+name = "Restaurant Analytics Platform"
+author = "agent"
+
+[workflows.workflow.metadata]
+outputType = "webview"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "bash -c \"unset DATABASE_URL && export PYTHONPATH=$PWD:$PYTHONPATH && python -m uvicorn app.main:app --host localhost --port 8000 & sleep 5 && streamlit run streamlit_app.py --server.address 0.0.0.0 --server.port 5000 --server.headless true --server.allowRunOnSave false\""
+waitForPort = 5000
 
 [deployment]
-run = ["bash", "-lc", "PROJECT_ROOT=$PWD ML_ARTIFACT_DIR=$PWD/ml/artifacts ML_DATASET_CSV=$PWD/data/merged_dataset.csv SQLITE_PATH=$PWD/database.sqlite uvicorn app.main:app --host 0.0.0.0 --port 8000 & streamlit run streamlit_app.py --server.address=0.0.0.0 --server.port=3000"]
-deploymentTarget = "cloudrun"
+run = ["bash", "-c", "unset DATABASE_URL && export PYTHONPATH=$PWD:$PYTHONPATH && python -m uvicorn app.main:app --host localhost --port 8000 & sleep 5 && streamlit run streamlit_app.py --server.address 0.0.0.0 --server.port 5000 --server.headless true --server.allowRunOnSave false"]
+deploymentTarget = "autoscale"
 
 [[ports]]
 localPort = 3000
 externalPort = 80
 
+[[ports]]
+localPort = 5000
+externalPort = 5000
+
 [env]
 PYTHONPATH = "$PYTHONPATH:."
+
+[agent]
+expertMode = true
