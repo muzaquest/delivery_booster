@@ -40,7 +40,7 @@ class DataAdapter:
         
         if self.use_mysql:
             # Получаем название ресторана
-            name_query = "SELECT restaurant_name FROM restaurant_mapping WHERE restaurant_id = :rid"
+            name_query = "SELECT restaurant_name FROM restaurant_mapping WHERE restaurant_id = %(rid)s"
             name_df = pd.read_sql_query(name_query, self.engine, params={"rid": restaurant_id})
             restaurant_name = name_df.iloc[0][0] if not name_df.empty else None
             
@@ -59,7 +59,7 @@ class DataAdapter:
                     grab_rating as rating,
                     grab_offline_min as offline_rate
                 FROM daily_facts
-                WHERE restaurant_name = :rname AND stat_date BETWEEN :start AND :end
+                WHERE restaurant_name = %(rname)s AND stat_date BETWEEN %(start)s AND %(end)s
                 AND grab_sales > 0
                 ORDER BY stat_date
             """
@@ -78,7 +78,7 @@ class DataAdapter:
                     gojek_confirm_time as accepting_time,
                     gojek_delivery_time as delivery_time
                 FROM daily_facts
-                WHERE restaurant_name = :rname AND stat_date BETWEEN :start AND :end
+                WHERE restaurant_name = %(rname)s AND stat_date BETWEEN %(start)s AND %(end)s
                 AND gojek_sales > 0
                 ORDER BY stat_date
             """
@@ -123,7 +123,7 @@ class DataAdapter:
                     AVG(NULLIF(grab_rating,0) + NULLIF(gojek_rating,0)) as rating,
                     SUM(total_cancelled) as cancels
                 FROM daily_facts
-                WHERE stat_date BETWEEN :start AND :end
+                WHERE stat_date BETWEEN %(start)s AND %(end)s
             """
             
             df = pd.read_sql_query(query, self.engine, params={"start": start_date, "end": end_date})
@@ -194,7 +194,7 @@ class DataAdapter:
         
         if self.use_mysql:
             # Получаем название ресторана
-            name_query = "SELECT restaurant_name FROM restaurant_mapping WHERE restaurant_id = :rid"
+            name_query = "SELECT restaurant_name FROM restaurant_mapping WHERE restaurant_id = %(rid)s"
             name_df = pd.read_sql_query(name_query, self.engine, params={"rid": restaurant_id})
             restaurant_name = name_df.iloc[0][0] if not name_df.empty else None
             
@@ -203,7 +203,7 @@ class DataAdapter:
             
             query = """
                 SELECT * FROM ml_dataset
-                WHERE restaurant_name = :rname AND stat_date BETWEEN :start AND :end
+                WHERE restaurant_name = %(rname)s AND stat_date BETWEEN %(start)s AND %(end)s
                 ORDER BY stat_date
             """
             
