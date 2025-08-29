@@ -123,7 +123,9 @@ def _section1_exec(basic: Dict) -> str:
 
 def _dataset_version_banner() -> str:
     try:
-        metrics_path = "/workspace/ml/artifacts/metrics.json"
+        project_root = os.getenv("PROJECT_ROOT", os.getcwd())
+        default_artifacts = os.path.join(project_root, "ml", "artifacts")
+        metrics_path = os.path.join(os.getenv("ML_ARTIFACT_DIR", default_artifacts), "metrics.json")
         if not os.path.exists(metrics_path):
             return ""
         with open(metrics_path, "r", encoding="utf-8") as f:
@@ -662,7 +664,9 @@ def _section8_critical_days_ml(period: str, restaurant_id: int) -> str:
     """Улучшенный раздел 8 с пороговыми значениями и строгой фильтрацией"""
     try:
         start_str, end_str = period.split("_")
-        df = pd.read_csv("/workspace/data/merged_dataset.csv", parse_dates=["date"])
+        project_root = os.getenv("PROJECT_ROOT", os.getcwd())
+        csv_path = os.getenv("ML_DATASET_CSV", os.path.join(project_root, "data", "merged_dataset.csv"))
+        df = pd.read_csv(csv_path, parse_dates=["date"])
         sub = df[(df["restaurant_id"] == restaurant_id) & (df["date"] >= start_str) & (df["date"] <= end_str)].copy()
         
         if sub.empty:
@@ -951,7 +955,9 @@ def _section9_recommendations(period: str, restaurant_id: int) -> str:
     try:
         # Use SHAP over the whole period to prioritize levers; exclude trivial features
         start_str, end_str = period.split("_")
-        df = pd.read_csv("/workspace/data/merged_dataset.csv", parse_dates=["date"]) if os.path.exists("/workspace/data/merged_dataset.csv") else pd.DataFrame()
+        project_root = os.getenv("PROJECT_ROOT", os.getcwd())
+        csv_path = os.getenv("ML_DATASET_CSV", os.path.join(project_root, "data", "merged_dataset.csv"))
+        df = pd.read_csv(csv_path, parse_dates=["date"]) if os.path.exists(csv_path) else pd.DataFrame()
         sub = df[(df.get("restaurant_id") == restaurant_id) & (df.get("date") >= start_str) & (df.get("date") <= end_str)].copy() if not df.empty else pd.DataFrame()
         lines = []
         lines.append("9. 🎯 СТРАТЕГИЧЕСКИЕ РЕКОМЕНДАЦИИ")
@@ -961,7 +967,7 @@ def _section9_recommendations(period: str, restaurant_id: int) -> str:
             return "\n".join(lines)
 
         # Load model and compute feature importances
-        model, features, background = load_artifacts("/workspace/ml/artifacts")
+        model, features, background = load_artifacts(os.getenv("ML_ARTIFACT_DIR", os.path.join(os.getenv("PROJECT_ROOT", os.getcwd()), "ml", "artifacts")))
         X = sub[features]
         pre = model.named_steps["pre"]
         mdl = model.named_steps["model"]

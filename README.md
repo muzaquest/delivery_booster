@@ -1,3 +1,17 @@
+## First Run (prod) on Replit
+
+Quick start (no DB/ML setup needed):
+1) Click Run
+2) Open the web preview on port 3000 (Streamlit UI)
+3) If you see a prompt, click “Инициализировать демо‑данные”
+4) Go to tab “Анализ ресторана” and generate a report
+
+Optional (connect MySQL later): Set Secret `DATABASE_URL` with a MySQL DSN (`mysql+pymysql://user:pass@host:3306/dbname?charset=utf8mb4`) and click “(Пере)обучить ML”.
+
+Notes:
+- External port is 3000 (Streamlit). FastAPI stays internal on 8000.
+- All paths are controlled by env vars: `PROJECT_ROOT`, `ML_ARTIFACT_DIR`, `ML_DATASET_CSV`, `SQLITE_PATH` (fallback).
+- MySQL only; no PostgreSQL operators; views are regular or assembled in pandas.
 # Аналитика продаж ресторанов (FastAPI + PostgreSQL + ETL + ML)
 
 Модульная система аналитики и прогноза продаж с FastAPI, PostgreSQL, ETL, и ML (LightGBM/RandomForest + SHAP).

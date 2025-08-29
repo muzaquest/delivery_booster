@@ -4,29 +4,79 @@ from datetime import date, timedelta
 from typing import Optional
 
 import pandas as pd
+import requests
 import streamlit as st
 
-sys.path.append('/workspace')
+sys.path.append(os.getenv("PROJECT_ROOT", os.getcwd()))
 
 from etl.data_loader import get_engine
 from app.report_text import generate_full_report
 
+API_BASE = os.getenv("ANALYTICS_API_BASE", "http://localhost:8000")
+
+
+def _api_available() -> bool:
+    try:
+        resp = requests.get(f"{API_BASE}/health", timeout=3)
+        return resp.ok
+    except Exception:
+        return False
+
+
+def _demo_dataset_path() -> str:
+    project_root = os.getenv("PROJECT_ROOT", os.getcwd())
+    return os.path.join(project_root, 'data', 'merged_dataset.csv')
+
+
+def _ensure_demo_dataset():
+    csv_path = _demo_dataset_path()
+    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+    if not os.path.exists(csv_path):
+        # Copy bundled demo dataset into place
+        project_root = os.getenv("PROJECT_ROOT", os.getcwd())
+        demo_src = os.path.join(project_root, 'data', 'demo_merged_dataset.csv')
+        if os.path.exists(demo_src):
+            import shutil
+            shutil.copyfile(demo_src, csv_path)
+        else:
+            # Minimal inline demo as a last resort
+            demo = pd.DataFrame([
+                {"date":"2025-06-01","restaurant_id":101,"restaurant_name":"Demo One","total_sales":1200000,"orders_count":120,"ads_spend":60000,"ads_sales":240000,"temp":30.5,"rain":0.0,"is_holiday":0}
+            ])
+            demo.to_csv(csv_path, index=False)
+    return csv_path
+
 
 def _list_restaurants() -> pd.DataFrame:
 	"""Получение списка ресторанов через адаптер"""
+	# Prefer API
 	try:
-		from app.data_adapter import get_data_adapter
-		adapter = get_data_adapter()
-		return adapter.get_restaurants_list()
+		resp = requests.get(f"{API_BASE}/restaurants", timeout=15)
+		if resp.ok:
+			data = resp.json()
+			rows = data.get("restaurants") or []
+			return pd.DataFrame(rows)
 	except Exception:
-		# Fallback к старому способу
-		eng = get_engine('/workspace/database.sqlite')
+		pass
+	# Fallback к старому способу
+	try:
+		eng = get_engine(os.getenv("SQLITE_PATH"))
 		df = pd.read_sql_query('SELECT id, name FROM restaurants ORDER BY name', eng)
 		return df
+	except Exception:
+		# Last fallback: derive from demo CSV
+		try:
+			csv_path = _ensure_demo_dataset()
+			df = pd.read_csv(csv_path)
+			names = df.groupby(["restaurant_id","restaurant_name"], as_index=False).size()[["restaurant_id","restaurant_name"]]
+			return names.rename(columns={"restaurant_id":"id","restaurant_name":"name"})
+		except Exception:
+			return pd.DataFrame(columns=["id","name"]) 
 
 
 def _ensure_reports_dir() -> str:
-	dir_path = os.path.join('/workspace', 'reports')
+	project_root = os.getenv("PROJECT_ROOT", os.getcwd())
+	dir_path = os.path.join(project_root, 'reports')
 	os.makedirs(dir_path, exist_ok=True)
 	return dir_path
 
@@ -98,24 +148,28 @@ def _retrain_ml_model():
 	try:
 		with st.spinner('Переобучение ML модели...'):
 			import subprocess
-			
-			# Экспортируем данные в CSV
-			from etl.build_views import export_to_csv_for_ml
-			if export_to_csv_for_ml():
-				# Запускаем обучение
-				result = subprocess.run([
-					'python', 'ml/training.py', 
-					'--csv', '/workspace/data/live_dataset.csv',
-					'--out', '/workspace/ml/artifacts'
-				], capture_output=True, text=True, cwd='/workspace')
-				
-				if result.returncode == 0:
-					st.success("✅ ML модель переобучена успешно!")
-					st.json(result.stdout)
-				else:
-					st.error(f"❌ Ошибка обучения: {result.stderr}")
+			project_root = os.getenv("PROJECT_ROOT", os.getcwd())
+			artifact_dir = os.getenv("ML_ARTIFACT_DIR", os.path.join(project_root, 'ml', 'artifacts'))
+			db_url = os.getenv("DATABASE_URL")
+			if db_url:
+				cmd = [
+					'python', 'ml/training.py',
+					'--from-db',
+					'--out', artifact_dir
+				]
 			else:
-				st.error("❌ Ошибка экспорта данных для ML")
+				csv_path = os.getenv("ML_DATASET_CSV", os.path.join(project_root, 'data', 'merged_dataset.csv'))
+				cmd = [
+					'python', 'ml/training.py',
+					'--csv', csv_path,
+					'--out', artifact_dir
+				]
+			result = subprocess.run(cmd, capture_output=True, text=True, cwd=project_root)
+			if result.returncode == 0:
+				st.success("✅ ML модель переобучена успешно!")
+				st.text(result.stdout)
+			else:
+				st.error(f"❌ Ошибка обучения: {result.stderr}")
 				
 	except Exception as e:
 		st.error(f"❌ Ошибка переобучения: {e}")
@@ -154,7 +208,17 @@ def tab_restaurant_analysis():
 
 	if st.button('Сформировать отчёт'):
 		try:
-			text = generate_full_report(period=period, restaurant_id=rest_id)
+			# Prefer API call
+			try:
+				resp = requests.get(f"{API_BASE}/report-text", params={"period": period, "restaurant_id": rest_id}, timeout=60)
+				data = resp.json() if resp.ok else {"error": resp.text}
+				if 'report' in data:
+					text = data['report']
+				else:
+					raise RuntimeError(data.get('error') or 'unknown error')
+			except Exception:
+				# Fallback to local generator
+				text = generate_full_report(period=period, restaurant_id=rest_id)
 			st.success('Отчёт сформирован')
 			st.text_area('Отчёт', value=text, height=600)
 			reports_dir = _ensure_reports_dir()
@@ -209,7 +273,7 @@ def _delta(a: float, b: float) -> float:
 
 def tab_base_analysis():
 	st.header('Анализ базы (KPI)')
-	eng = get_engine('/workspace/database.sqlite')
+	eng = get_engine(os.getenv("SQLITE_PATH"))
 	presets = _period_presets()
 	preset = st.selectbox('Период (пресеты)', list(presets.keys()))
 	start_default, end_default = presets[preset]
@@ -319,6 +383,7 @@ def tab_ai_query():
 	st.markdown("---")
 	with st.expander("🔧 Статус AI системы"):
 		try:
+			# Data status via adapter (DB) remains, but ML status via API
 			from app.data_adapter import get_data_adapter
 			adapter = get_data_adapter()
 			status = adapter.get_data_status()
@@ -328,10 +393,19 @@ def tab_ai_query():
 			
 			# Проверяем ML модель
 			import os
-			if os.path.exists('/workspace/ml/artifacts/model.joblib'):
-				st.success("✅ ML модель готова для анализа")
-			else:
-				st.warning("⚠️ ML модель не обучена. Запустите обучение для точного анализа.")
+			# Query API for ML status
+			try:
+				resp = requests.get(f"{API_BASE}/ml/status", timeout=10)
+				mls = resp.json() if resp.ok else {"ready": False}
+				if mls.get("ready"):
+					st.success("✅ ML модель готова для анализа")
+					champ = mls.get("champion", {})
+					if champ:
+						st.write(f"Модель: {champ.get('champion', 'unknown')}")
+				else:
+					st.warning("⚠️ ML модель не обучена. Запустите обучение для точного анализа.")
+			except Exception:
+				st.warning("⚠️ Не удалось получить статус ML")
 			
 			# Проверяем праздники
 			if os.path.exists('/workspace/etl/holidays_loader.py'):
@@ -345,6 +419,14 @@ def main():
 	st.set_page_config(page_title='Food Intelligence', layout='wide')
 	st.title('Food Intelligence — Аналитика продаж ресторанов')
 	
+	# API banner
+	if not _api_available():
+		st.warning("API (порт 8000) недоступен — демо‑режим: SQLite/CSV")
+	# ML banner
+	project_root = os.getenv("PROJECT_ROOT", os.getcwd())
+	artifact_dir = os.getenv("ML_ARTIFACT_DIR", os.path.join(project_root, 'ml', 'artifacts'))
+	if not os.path.exists(os.path.join(artifact_dir, 'model.joblib')):
+		st.info("ML отключен (демо): отчёты без модели")
 	# Показываем статус данных
 	_show_data_status()
 	
@@ -372,7 +454,11 @@ def _show_data_status():
 			st.error("❌ Проблемы с данными. Проверьте подключение к БД.")
 			
 	except Exception:
-		st.info("📁 Используются локальные данные SQLite")
+		# If no SQLite either, provide demo initializer
+		st.warning("📁 Данные недоступны. Вы можете инициализировать демо‑данные.")
+		if st.button("Инициализировать демо‑данные"):
+			p = _ensure_demo_dataset()
+			st.success(f"Готово: {p}")
 
 
 if __name__ == '__main__':

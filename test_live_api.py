@@ -139,36 +139,22 @@ def test_database_setup():
         return False
     
     try:
-        import psycopg2
-        
-        # Тестируем подключение
-        with psycopg2.connect(db_url) as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("SELECT version()")
-                version = cursor.fetchone()[0]
-                print(f"✅ PostgreSQL подключение успешно")
-                print(f"📊 Версия: {version}")
-                
-                # Проверяем существование таблиц
-                cursor.execute("""
-                    SELECT table_name 
-                    FROM information_schema.tables 
-                    WHERE table_schema = 'public' 
-                    AND table_name IN ('raw_stats', 'restaurant_mapping', 'ml_jobs')
-                """)
-                
-                tables = [row[0] for row in cursor.fetchall()]
-                
-                if tables:
-                    print(f"✅ Найдены таблицы: {', '.join(tables)}")
-                else:
-                    print("⚠️ Таблицы для живого API не созданы")
-                    print("💡 Запустите: python db/migrate_to_live_api.py")
-                
-                return True
-                
+        from sqlalchemy import create_engine, text
+        eng = create_engine(db_url, future=True)
+        with eng.connect() as conn:
+            conn.execute(text("SELECT 1"))
+            print(f"✅ Подключение к БД установлено")
+            # Опционально проверим базовые таблицы
+            try:
+                res = conn.execute(text("SELECT COUNT(*) FROM restaurant_mapping"))
+                _ = res.scalar()
+                print("✅ Таблица restaurant_mapping доступна")
+            except Exception:
+                print("ℹ️ Таблица restaurant_mapping не найдена (не критично)")
+            return True
+     
     except Exception as e:
-        print(f"❌ Ошибка подключения к PostgreSQL: {e}")
+        print("❌ Ошибка подключения к БД:", e)
         return False
 
 
