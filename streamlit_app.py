@@ -15,6 +15,33 @@ from app.report_text import generate_full_report
 API_BASE = os.getenv("ANALYTICS_API_BASE", "http://localhost:8000")
 
 
+def _api_available() -> bool:
+    try:
+        resp = requests.get(f"{API_BASE}/health", timeout=3)
+        return resp.ok
+    except Exception:
+        return False
+
+
+def _demo_dataset_path() -> str:
+    project_root = os.getenv("PROJECT_ROOT", os.getcwd())
+    return os.path.join(project_root, 'data', 'merged_dataset.csv')
+
+
+def _ensure_demo_dataset():
+    csv_path = _demo_dataset_path()
+    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+    if not os.path.exists(csv_path):
+        # Minimal demo if file missing
+        demo = pd.DataFrame([
+            {"date":"2025-06-01","restaurant_id":101,"restaurant_name":"Demo One","total_sales":1200000,"orders_count":120,"ads_spend":60000,"ads_sales":240000,"temp":30.5,"rain":0.0,"is_holiday":0},
+            {"date":"2025-06-02","restaurant_id":101,"restaurant_name":"Demo One","total_sales":1150000,"orders_count":110,"ads_spend":55000,"ads_sales":200000,"temp":30.0,"rain":1.2,"is_holiday":0},
+            {"date":"2025-06-01","restaurant_id":102,"restaurant_name":"Demo Two","total_sales":800000,"orders_count":80,"ads_spend":20000,"ads_sales":80000,"temp":29.5,"rain":0.0,"is_holiday":0}
+        ])
+        demo.to_csv(csv_path, index=False)
+    return csv_path
+
+
 def _list_restaurants() -> pd.DataFrame:
 	"""Получение списка ресторанов через адаптер"""
 	# Prefer API
@@ -32,7 +59,14 @@ def _list_restaurants() -> pd.DataFrame:
 		df = pd.read_sql_query('SELECT id, name FROM restaurants ORDER BY name', eng)
 		return df
 	except Exception:
-		return pd.DataFrame(columns=["id","name"]) 
+		# Last fallback: derive from demo CSV
+		try:
+			csv_path = _ensure_demo_dataset()
+			df = pd.read_csv(csv_path)
+			names = df.groupby(["restaurant_id","restaurant_name"], as_index=False).size()[["restaurant_id","restaurant_name"]]
+			return names.rename(columns={"restaurant_id":"id","restaurant_name":"name"})
+		except Exception:
+			return pd.DataFrame(columns=["id","name"]) 
 
 
 def _ensure_reports_dir() -> str:
@@ -371,6 +405,14 @@ def main():
 	st.set_page_config(page_title='Food Intelligence', layout='wide')
 	st.title('Food Intelligence — Аналитика продаж ресторанов')
 	
+	# API banner
+	if not _api_available():
+		st.warning("API (порт 8000) недоступен — демо‑режим: SQLite/CSV")
+	# ML banner
+	project_root = os.getenv("PROJECT_ROOT", os.getcwd())
+	artifact_dir = os.getenv("ML_ARTIFACT_DIR", os.path.join(project_root, 'ml', 'artifacts'))
+	if not os.path.exists(os.path.join(artifact_dir, 'model.joblib')):
+		st.info("ML отключен (демо): отчёты без модели")
 	# Показываем статус данных
 	_show_data_status()
 	
@@ -398,7 +440,11 @@ def _show_data_status():
 			st.error("❌ Проблемы с данными. Проверьте подключение к БД.")
 			
 	except Exception:
-		st.info("📁 Используются локальные данные SQLite")
+		# If no SQLite either, provide demo initializer
+		st.warning("📁 Данные недоступны. Вы можете инициализировать демо‑данные.")
+		if st.button("Инициализировать демо‑данные"):
+			p = _ensure_demo_dataset()
+			st.success(f"Готово: {p}")
 
 
 if __name__ == '__main__':
