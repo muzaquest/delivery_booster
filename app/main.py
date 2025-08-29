@@ -163,8 +163,67 @@ async def factors(period: str = Query(..., description="YYYY-MM-DD_YYYY-MM-DD"),
     }
 
 
+def _resolve_restaurant_id(restaurant_name: Optional[str]) -> Optional[int]:
+    if not restaurant_name:
+        return None
+    try:
+        eng = get_engine()
+        with eng.connect() as conn:
+            try:
+                row = conn.execute(text("SELECT id FROM restaurants WHERE name = :n"), {"n": restaurant_name}).first()
+                if row:
+                    return int(row[0])
+            except Exception:
+                pass
+            try:
+                row = conn.execute(text("SELECT restaurant_id FROM restaurant_mapping WHERE restaurant_name = :n"), {"n": restaurant_name}).first()
+                if row:
+                    return int(row[0])
+            except Exception:
+                pass
+    except Exception:
+        pass
+    # CSV fallback
+    try:
+        project_root = os.getenv("PROJECT_ROOT", os.getcwd())
+        csv_path = os.getenv("ML_DATASET_CSV", os.path.join(project_root, "data", "merged_dataset.csv"))
+        if os.path.exists(csv_path):
+            df = pd.read_csv(csv_path)
+            sub = df[df.get("restaurant_name") == restaurant_name]
+            if not sub.empty:
+                return int(sub["restaurant_id"].iloc[0])
+    except Exception:
+        pass
+    return None
+
+
+def _build_summary_from_csv(restaurant_id: Optional[int], restaurant_name: Optional[str], period: str) -> dict:
+    project_root = os.getenv("PROJECT_ROOT", os.getcwd())
+    csv_path = os.getenv("ML_DATASET_CSV", os.path.join(project_root, "data", "merged_dataset.csv"))
+    try:
+        df = pd.read_csv(csv_path, parse_dates=["date"]) if os.path.exists(csv_path) else pd.DataFrame()
+    except Exception:
+        df = pd.DataFrame()
+    try:
+        start_str, end_str = period.split("_")
+    except Exception:
+        start_str = end_str = None
+    if df.empty or not start_str or not end_str:
+        return {"period": period, "restaurant_id": restaurant_id, "restaurant_name": restaurant_name, "total_sales": 0.0, "orders": 0, "aov": 0.0}
+    mask = (df["date"] >= start_str) & (df["date"] <= end_str)
+    if restaurant_id is not None:
+        mask &= (df.get("restaurant_id") == restaurant_id)
+    elif restaurant_name:
+        mask &= (df.get("restaurant_name") == restaurant_name)
+    sub = df.loc[mask].copy()
+    total = float(pd.to_numeric(sub.get("total_sales"), errors="coerce").fillna(0).sum()) if not sub.empty else 0.0
+    orders = int(pd.to_numeric(sub.get("orders_count"), errors="coerce").fillna(0).sum()) if not sub.empty else 0
+    aov = float(total / orders) if orders else 0.0
+    return {"period": period, "restaurant_id": restaurant_id, "restaurant_name": restaurant_name, "total_sales": total, "orders": orders, "aov": aov}
+
+
 @app.get("/report-text")
-async def report_text(period: str = Query(..., description="YYYY-MM-DD_YYYY-MM-DD"), restaurant_id: Optional[int] = None) -> dict:
+async def report_text(period: str = Query(..., description="YYYY-MM-DD_YYYY-MM-DD"), restaurant_id: Optional[int] = None, restaurant_name: Optional[str] = None) -> dict:
     try:
         # Validate period format
         start_str, end_str = period.split("_")
@@ -173,26 +232,31 @@ async def report_text(period: str = Query(..., description="YYYY-MM-DD_YYYY-MM-D
     except Exception:
         return {"error": "Invalid period format. Use YYYY-MM-DD_YYYY-MM-DD"}
 
+    if restaurant_id is None and restaurant_name:
+        restaurant_id = _resolve_restaurant_id(restaurant_name)
     if restaurant_id is None:
-        # Try to infer from CSV demo: pick first
+        # CSV fallback: pick first available id
         try:
             project_root = os.getenv("PROJECT_ROOT", os.getcwd())
             csv_path = os.getenv("ML_DATASET_CSV", os.path.join(project_root, "data", "merged_dataset.csv"))
             if os.path.exists(csv_path):
                 df = pd.read_csv(csv_path)
-                rid = int(df["restaurant_id"].iloc[0]) if not df.empty else None
-                if rid is not None:
-                    restaurant_id = rid
+                if not df.empty:
+                    restaurant_id = int(df["restaurant_id"].iloc[0])
+                    if not restaurant_name and "restaurant_name" in df.columns:
+                        restaurant_name = str(df["restaurant_name"].iloc[0])
         except Exception:
-            pass
-        if restaurant_id is None:
-            return {"error": "restaurant_id is required for /report-text"}
+            restaurant_id = None
+    if restaurant_id is None:
+        summary = _build_summary_from_csv(None, restaurant_name, period)
+        return {"report": f"Demo report for {restaurant_name or 'N/A'} {period}\n(ml fallback)", "summary": summary}
 
     try:
-        text = generate_full_report(period=period, restaurant_id=int(restaurant_id))
-        return {"report": text}
+        text_md = generate_full_report(period=period, restaurant_id=int(restaurant_id))
     except Exception as e:
-        return {"error": str(e)}
+        text_md = f"Demo report (fallback) for {restaurant_name or restaurant_id} {period}: {e}"
+    summary = _build_summary_from_csv(restaurant_id, restaurant_name, period)
+    return {"report": text_md, "summary": summary}
 
 
 @app.get("/restaurants")
@@ -314,59 +378,6 @@ async def coverage() -> dict:
 
 
 @app.get("/report-test")
-async def report_test(restaurant_name: str = Query(...), period: str = Query(...)) -> dict:
-    """Generate basic report text for smoke test; no recursion."""
-    try:
-        # Resolve restaurant_id by name from available tables
-        eng = get_engine()
-        with eng.connect() as conn:
-            rid = None
-            try:
-                row = conn.execute(text("SELECT id FROM restaurants WHERE name = :n"), {"n": restaurant_name}).first()
-                if row:
-                    rid = int(row[0])
-            except Exception:
-                pass
-            if rid is None:
-                try:
-                    row = conn.execute(text("SELECT restaurant_id FROM restaurant_mapping WHERE restaurant_name = :n"), {"n": restaurant_name}).first()
-                    if row:
-                        rid = int(row[0])
-                except Exception:
-                    pass
-        if rid is not None:
-            text_report = generate_full_report(period=period, restaurant_id=rid)
-            return {"report": text_report}
-        # CSV fallback demo
-        project_root = os.getenv("PROJECT_ROOT", os.getcwd())
-        csv_path = os.getenv("ML_DATASET_CSV", os.path.join(project_root, "data", "merged_dataset.csv"))
-        try:
-            df = pd.read_csv(csv_path, parse_dates=["date"]) if os.path.exists(csv_path) else pd.DataFrame()
-        except Exception:
-            df = pd.DataFrame()
-        if df.empty:
-            return {"report": f"Demo report for {restaurant_name} {period}: no data"}
-        try:
-            start_str, end_str = period.split("_")
-            mask = (df["date"] >= start_str) & (df["date"] <= end_str)
-            sub = df.loc[mask & ((df.get("restaurant_name") == restaurant_name) | (df.get("restaurant_id") == restaurant_name))].copy()
-            if sub.empty and "restaurant_name" in df.columns:
-                # try any restaurant
-                sub = df.loc[mask].copy()
-            total_sales = float(pd.to_numeric(sub.get("total_sales"), errors="coerce").fillna(0).sum()) if not sub.empty else 0.0
-            orders = int(pd.to_numeric(sub.get("orders_count"), errors="coerce").fillna(0).sum()) if not sub.empty else 0
-            aov = (total_sales / orders) if orders else 0.0
-            rain = float(pd.to_numeric(sub.get("rain"), errors="coerce").fillna(0).mean()) if not sub.empty else 0.0
-            temp = float(pd.to_numeric(sub.get("temp"), errors="coerce").fillna(0).mean()) if not sub.empty else 0.0
-            text_report = (
-                f"Demo report for {restaurant_name} {period}\n"
-                f"Total sales: {int(total_sales)} IDR\n"
-                f"Orders: {orders}\n"
-                f"AOV: {int(aov) if orders else 0} IDR\n"
-                f"Avg temp: {temp:.1f}°C, Avg rain: {rain:.1f}mm\n"
-            )
-            return {"report": text_report}
-        except Exception as e:
-            return {"report": f"Demo report for {restaurant_name} {period}: error {e}"}
-    except Exception as e:
-        return {"error": str(e)}
+async def report_test(restaurant_name: str = Query(None), period: str = Query(...), restaurant_id: Optional[int] = None) -> dict:
+    """Alias of /report-text for backward compatibility."""
+    return await report_text(period=period, restaurant_id=restaurant_id, restaurant_name=restaurant_name)

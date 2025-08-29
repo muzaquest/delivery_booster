@@ -150,11 +150,20 @@ def _retrain_ml_model():
 			import subprocess
 			project_root = os.getenv("PROJECT_ROOT", os.getcwd())
 			artifact_dir = os.getenv("ML_ARTIFACT_DIR", os.path.join(project_root, 'ml', 'artifacts'))
-			cmd = [
-				'python', 'ml/training.py',
-				'--from-db',
-				'--out', artifact_dir
-			]
+			db_url = os.getenv("DATABASE_URL")
+			if db_url:
+				cmd = [
+					'python', 'ml/training.py',
+					'--from-db',
+					'--out', artifact_dir
+				]
+			else:
+				csv_path = os.getenv("ML_DATASET_CSV", os.path.join(project_root, 'data', 'merged_dataset.csv'))
+				cmd = [
+					'python', 'ml/training.py',
+					'--csv', csv_path,
+					'--out', artifact_dir
+				]
 			result = subprocess.run(cmd, capture_output=True, text=True, cwd=project_root)
 			if result.returncode == 0:
 				st.success("✅ ML модель переобучена успешно!")

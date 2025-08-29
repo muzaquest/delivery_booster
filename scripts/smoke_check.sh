@@ -10,7 +10,7 @@ print(rows[0]['name'] if rows else 'Demo One')
 PY
 )
 echo "Restaurant: $REST"
-curl -s --get "http://localhost:8000/report-test" \
+curl -s --get "http://localhost:8000/report-text" \
   --data-urlencode "restaurant_name=${REST}" \
   --data-urlencode "period=2025-06-01_2025-06-30" | head -n 1
 echo "GREEN"
