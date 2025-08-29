@@ -32,13 +32,18 @@ def _ensure_demo_dataset():
     csv_path = _demo_dataset_path()
     os.makedirs(os.path.dirname(csv_path), exist_ok=True)
     if not os.path.exists(csv_path):
-        # Minimal demo if file missing
-        demo = pd.DataFrame([
-            {"date":"2025-06-01","restaurant_id":101,"restaurant_name":"Demo One","total_sales":1200000,"orders_count":120,"ads_spend":60000,"ads_sales":240000,"temp":30.5,"rain":0.0,"is_holiday":0},
-            {"date":"2025-06-02","restaurant_id":101,"restaurant_name":"Demo One","total_sales":1150000,"orders_count":110,"ads_spend":55000,"ads_sales":200000,"temp":30.0,"rain":1.2,"is_holiday":0},
-            {"date":"2025-06-01","restaurant_id":102,"restaurant_name":"Demo Two","total_sales":800000,"orders_count":80,"ads_spend":20000,"ads_sales":80000,"temp":29.5,"rain":0.0,"is_holiday":0}
-        ])
-        demo.to_csv(csv_path, index=False)
+        # Copy bundled demo dataset into place
+        project_root = os.getenv("PROJECT_ROOT", os.getcwd())
+        demo_src = os.path.join(project_root, 'data', 'demo_merged_dataset.csv')
+        if os.path.exists(demo_src):
+            import shutil
+            shutil.copyfile(demo_src, csv_path)
+        else:
+            # Minimal inline demo as a last resort
+            demo = pd.DataFrame([
+                {"date":"2025-06-01","restaurant_id":101,"restaurant_name":"Demo One","total_sales":1200000,"orders_count":120,"ads_spend":60000,"ads_sales":240000,"temp":30.5,"rain":0.0,"is_holiday":0}
+            ])
+            demo.to_csv(csv_path, index=False)
     return csv_path
 
 
