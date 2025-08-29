@@ -4,29 +4,40 @@ from datetime import date, timedelta
 from typing import Optional
 
 import pandas as pd
+import requests
 import streamlit as st
 
-sys.path.append('/workspace')
+sys.path.append(os.getenv("PROJECT_ROOT", os.getcwd()))
 
 from etl.data_loader import get_engine
 from app.report_text import generate_full_report
 
+API_BASE = os.getenv("ANALYTICS_API_BASE", "http://localhost:8000")
+
 
 def _list_restaurants() -> pd.DataFrame:
 	"""Получение списка ресторанов через адаптер"""
+	# Prefer API
 	try:
-		from app.data_adapter import get_data_adapter
-		adapter = get_data_adapter()
-		return adapter.get_restaurants_list()
+		resp = requests.get(f"{API_BASE}/restaurants", timeout=15)
+		if resp.ok:
+			data = resp.json()
+			rows = data.get("restaurants") or []
+			return pd.DataFrame(rows)
 	except Exception:
-		# Fallback к старому способу
-		eng = get_engine('/workspace/database.sqlite')
+		pass
+	# Fallback к старому способу
+	try:
+		eng = get_engine(os.getenv("SQLITE_PATH"))
 		df = pd.read_sql_query('SELECT id, name FROM restaurants ORDER BY name', eng)
 		return df
+	except Exception:
+		return pd.DataFrame(columns=["id","name"]) 
 
 
 def _ensure_reports_dir() -> str:
-	dir_path = os.path.join('/workspace', 'reports')
+	project_root = os.getenv("PROJECT_ROOT", os.getcwd())
+	dir_path = os.path.join(project_root, 'reports')
 	os.makedirs(dir_path, exist_ok=True)
 	return dir_path
 
@@ -98,24 +109,19 @@ def _retrain_ml_model():
 	try:
 		with st.spinner('Переобучение ML модели...'):
 			import subprocess
-			
-			# Экспортируем данные в CSV
-			from etl.build_views import export_to_csv_for_ml
-			if export_to_csv_for_ml():
-				# Запускаем обучение
-				result = subprocess.run([
-					'python', 'ml/training.py', 
-					'--csv', '/workspace/data/live_dataset.csv',
-					'--out', '/workspace/ml/artifacts'
-				], capture_output=True, text=True, cwd='/workspace')
-				
-				if result.returncode == 0:
-					st.success("✅ ML модель переобучена успешно!")
-					st.json(result.stdout)
-				else:
-					st.error(f"❌ Ошибка обучения: {result.stderr}")
+			project_root = os.getenv("PROJECT_ROOT", os.getcwd())
+			artifact_dir = os.getenv("ML_ARTIFACT_DIR", os.path.join(project_root, 'ml', 'artifacts'))
+			cmd = [
+				'python', 'ml/training.py',
+				'--from-db',
+				'--out', artifact_dir
+			]
+			result = subprocess.run(cmd, capture_output=True, text=True, cwd=project_root)
+			if result.returncode == 0:
+				st.success("✅ ML модель переобучена успешно!")
+				st.text(result.stdout)
 			else:
-				st.error("❌ Ошибка экспорта данных для ML")
+				st.error(f"❌ Ошибка обучения: {result.stderr}")
 				
 	except Exception as e:
 		st.error(f"❌ Ошибка переобучения: {e}")
@@ -154,7 +160,17 @@ def tab_restaurant_analysis():
 
 	if st.button('Сформировать отчёт'):
 		try:
-			text = generate_full_report(period=period, restaurant_id=rest_id)
+			# Prefer API call
+			try:
+				resp = requests.get(f"{API_BASE}/report-text", params={"period": period, "restaurant_id": rest_id}, timeout=60)
+				data = resp.json() if resp.ok else {"error": resp.text}
+				if 'report' in data:
+					text = data['report']
+				else:
+					raise RuntimeError(data.get('error') or 'unknown error')
+			except Exception:
+				# Fallback to local generator
+				text = generate_full_report(period=period, restaurant_id=rest_id)
 			st.success('Отчёт сформирован')
 			st.text_area('Отчёт', value=text, height=600)
 			reports_dir = _ensure_reports_dir()
@@ -209,7 +225,7 @@ def _delta(a: float, b: float) -> float:
 
 def tab_base_analysis():
 	st.header('Анализ базы (KPI)')
-	eng = get_engine('/workspace/database.sqlite')
+	eng = get_engine(os.getenv("SQLITE_PATH"))
 	presets = _period_presets()
 	preset = st.selectbox('Период (пресеты)', list(presets.keys()))
 	start_default, end_default = presets[preset]
@@ -319,6 +335,7 @@ def tab_ai_query():
 	st.markdown("---")
 	with st.expander("🔧 Статус AI системы"):
 		try:
+			# Data status via adapter (DB) remains, but ML status via API
 			from app.data_adapter import get_data_adapter
 			adapter = get_data_adapter()
 			status = adapter.get_data_status()
@@ -328,10 +345,19 @@ def tab_ai_query():
 			
 			# Проверяем ML модель
 			import os
-			if os.path.exists('/workspace/ml/artifacts/model.joblib'):
-				st.success("✅ ML модель готова для анализа")
-			else:
-				st.warning("⚠️ ML модель не обучена. Запустите обучение для точного анализа.")
+			# Query API for ML status
+			try:
+				resp = requests.get(f"{API_BASE}/ml/status", timeout=10)
+				mls = resp.json() if resp.ok else {"ready": False}
+				if mls.get("ready"):
+					st.success("✅ ML модель готова для анализа")
+					champ = mls.get("champion", {})
+					if champ:
+						st.write(f"Модель: {champ.get('champion', 'unknown')}")
+				else:
+					st.warning("⚠️ ML модель не обучена. Запустите обучение для точного анализа.")
+			except Exception:
+				st.warning("⚠️ Не удалось получить статус ML")
 			
 			# Проверяем праздники
 			if os.path.exists('/workspace/etl/holidays_loader.py'):

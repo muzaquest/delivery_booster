@@ -37,15 +37,27 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.sql import and_
 
 from config import get_env
+import os
 
 
-DEFAULT_SQLITE_PATH = get_env("SQLITE_PATH", "/workspace/database.sqlite")
+PROJECT_ROOT = os.getenv("PROJECT_ROOT", os.getcwd())
+DEFAULT_SQLITE_PATH = get_env("SQLITE_PATH", os.path.join(PROJECT_ROOT, "database.sqlite"))
 OPEN_METEO_ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/era5"
 OPEN_METEO_FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 
 
 def get_engine(sqlite_path: Optional[str] = None) -> Engine:
-    """Create SQLAlchemy engine for SQLite."""
+    """Create SQLAlchemy engine.
+
+    Priority:
+    - If DATABASE_URL is set (e.g., mysql+pymysql://...), use it
+    - Else fall back to SQLite at SQLITE_PATH (env) or provided sqlite_path
+    """
+    database_url = os.getenv("DATABASE_URL")
+    if database_url:
+        # Use SQLAlchemy to connect to MySQL or any SQLA-supported DB
+        return create_engine(database_url, future=True)
+
     db_path = sqlite_path or DEFAULT_SQLITE_PATH
     conn_str = f"sqlite:///{db_path}"
     engine = create_engine(conn_str, future=True)

@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from typing import Dict, List, Tuple
 
 import joblib
@@ -28,8 +29,9 @@ import datetime as dt
 import pickle
 
 
-DEFAULT_DATASET = "/workspace/data/merged_dataset.csv"
-DEFAULT_MODEL_DIR = "/workspace/ml/artifacts"
+PROJECT_ROOT = os.getenv("PROJECT_ROOT", os.getcwd())
+DEFAULT_DATASET = os.getenv("ML_DATASET_CSV", os.path.join(PROJECT_ROOT, "data", "merged_dataset.csv"))
+DEFAULT_MODEL_DIR = os.getenv("ML_ARTIFACT_DIR", os.path.join(PROJECT_ROOT, "ml", "artifacts"))
 
 
 def build_preprocessor(df: pd.DataFrame) -> Tuple[Pipeline, List[str]]:
@@ -162,21 +164,40 @@ def train_model(csv_path: str = DEFAULT_DATASET, model_dir: str = DEFAULT_MODEL_
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train LightGBM and RandomForest models for sales forecasting")
     parser.add_argument("--csv", type=str, default=DEFAULT_DATASET, help="Path to merged_dataset.csv")
-    parser.add_argument("--from-db", action='store_true', help="Read data from PostgreSQL instead of CSV")
+    parser.add_argument("--from-db", action='store_true', help="Read data from DATABASE_URL (MySQL) instead of CSV")
     parser.add_argument("--out", type=str, default=DEFAULT_MODEL_DIR, help="Artifacts output directory")
     args = parser.parse_args()
 
     if args.from_db:
-        # Экспортируем данные из БД в CSV для обучения
-        from etl.build_views import export_to_csv_for_ml
-        csv_path = "/workspace/data/live_dataset.csv"
-        
-        print("📊 Экспорт данных из БД для обучения...")
-        if export_to_csv_for_ml(csv_path):
-            print(f"✅ Данные экспортированы в {csv_path}")
-            metrics = train_model(csv_path, args.out)
-        else:
-            print("❌ Ошибка экспорта данных из БД")
+        # Читаем витрину ml_dataset из БД через SQLAlchemy
+        from etl.data_loader import get_engine
+        engine = get_engine()
+        try:
+            import pandas as pd
+            df = pd.read_sql_query(
+                """
+                SELECT 
+                    restaurant_id, stat_date AS date, total_sales, orders_count,
+                    ads_spend, ads_sales,
+                    rating, is_holiday, temp, rain,
+                    sales_lag_7d, sales_rolling_7d, orders_lag_7d, orders_rolling_7d
+                FROM ml_dataset
+                WHERE total_sales > 0 AND orders_count > 0
+                ORDER BY restaurant_id, stat_date
+                """,
+                engine,
+                parse_dates=["date"],
+            )
+            if df.empty:
+                print("❌ Витрина ml_dataset пуста")
+                sys.exit(1)
+            # Сохраняем во временный CSV и обучаем
+            os.makedirs(os.path.join(PROJECT_ROOT, "data"), exist_ok=True)
+            tmp_csv = os.path.join(PROJECT_ROOT, "data", "live_dataset.csv")
+            df.to_csv(tmp_csv, index=False)
+            metrics = train_model(tmp_csv, args.out)
+        except Exception as e:
+            print(f"❌ Ошибка чтения из БД: {e}")
             sys.exit(1)
     else:
         metrics = train_model(args.csv, args.out)

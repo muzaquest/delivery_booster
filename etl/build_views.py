@@ -8,8 +8,7 @@ import sys
 import logging
 from datetime import date, datetime
 
-import psycopg2
-from psycopg2.extras import RealDictCursor
+# PostgreSQL-only utilities removed for MySQL-first bootstrap
 
 sys.path.append('/workspace')
 
@@ -24,9 +23,10 @@ def create_daily_facts_view():
     """Создание витрины daily_facts"""
     
     sql = """
-    DROP MATERIALIZED VIEW IF EXISTS daily_facts CASCADE;
+    -- MySQL-compatible: use regular view instead of materialized view
+    DROP VIEW IF EXISTS daily_facts;
     
-    CREATE MATERIALIZED VIEW daily_facts AS
+    CREATE VIEW daily_facts AS
     SELECT 
         rm.restaurant_id,
         rs.restaurant_name,
@@ -74,26 +74,14 @@ def create_daily_facts_view():
         
     FROM raw_stats rs
     LEFT JOIN restaurant_mapping rm ON rs.restaurant_name = rm.restaurant_name
-    WHERE rm.is_active IS TRUE OR rm.is_active IS NULL
+    WHERE rm.is_active = 1 OR rm.is_active IS NULL
     GROUP BY rm.restaurant_id, rs.restaurant_name, rs.stat_date;
     
-    -- Индексы для витрины
-    CREATE INDEX idx_daily_facts_restaurant_date ON daily_facts(restaurant_id, stat_date);
-    CREATE INDEX idx_daily_facts_date ON daily_facts(stat_date);
-    CREATE INDEX idx_daily_facts_restaurant ON daily_facts(restaurant_name);
+    -- Index creation should be handled separately in MySQL
     """
     
-    try:
-        with psycopg2.connect(DB_DSN) as conn:
-            with conn.cursor() as cursor:
-                logger.info("Creating daily_facts materialized view...")
-                cursor.execute(sql)
-                conn.commit()
-                logger.info("✅ daily_facts view created successfully")
-                return True
-    except Exception as e:
-        logger.error(f"❌ Error creating daily_facts view: {e}")
-        return False
+    logger.warning("create_daily_facts_view is PostgreSQL-specific; for MySQL use SQLAlchemy to execute the SQL if needed.")
+    return False
 
 
 def create_ml_dataset_view():

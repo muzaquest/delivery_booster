@@ -1,3 +1,15 @@
+## First Run (prod) on Replit
+
+1) Import this repo into Replit
+2) In Secrets add `DATABASE_URL` with your MySQL DSN: `mysql+pymysql://user:pass@host:3306/dbname?charset=utf8mb4`
+3) Click Run — Streamlit UI on :3000, FastAPI on :8000
+4) Open the UI (tab 3) and click “(Пере)обучить ML” — it will read from DB and save artifacts into `ML_ARTIFACT_DIR`
+5) Go to tab 1 and generate a full report; it will save `.md` into `reports/` and offer a download
+
+Notes:
+- All paths are controlled by env vars: `PROJECT_ROOT`, `ML_ARTIFACT_DIR`, `ML_DATASET_CSV`, `SQLITE_PATH` (fallback)
+- API base for Streamlit is FastAPI at `http://localhost:8000`
+- MySQL only; no PostgreSQL operators; materialized views replaced by standard SQL or pandas
 # Аналитика продаж ресторанов (FastAPI + PostgreSQL + ETL + ML)
 
 Модульная система аналитики и прогноза продаж с FastAPI, PostgreSQL, ETL, и ML (LightGBM/RandomForest + SHAP).

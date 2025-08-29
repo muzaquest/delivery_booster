@@ -1,25 +1,20 @@
 """
 Утилиты для работы с базой данных
-Обеспечивают единый интерфейс для SQLite и PostgreSQL
+Единый интерфейс для SQLite (fallback) и MySQL (prod) через SQLAlchemy
 """
 
 import os
 import pandas as pd
 from etl.data_loader import get_engine
+from sqlalchemy import create_engine
 
 
 def get_universal_engine():
-    """Получение движка БД (PostgreSQL или SQLite fallback)"""
-    
+    """Получение движка БД (MySQL через DATABASE_URL или SQLite fallback)."""
     db_url = os.getenv("DATABASE_URL")
-    
-    if db_url and "postgresql" in db_url:
-        # Используем PostgreSQL
-        import psycopg2
-        return psycopg2.connect(db_url)
-    else:
-        # Fallback к SQLite
-        return get_engine()
+    if db_url:
+        return create_engine(db_url, future=True)
+    return get_engine()
 
 
 def execute_query(query: str, params: tuple = None, use_postgres_syntax: bool = None) -> pd.DataFrame:
@@ -36,24 +31,22 @@ def execute_query(query: str, params: tuple = None, use_postgres_syntax: bool = 
     """
     
     db_url = os.getenv("DATABASE_URL")
-    is_postgres = bool(db_url and "postgresql" in db_url)
+    is_mysql = bool(db_url and "mysql" in db_url)
     
     if use_postgres_syntax is None:
-        use_postgres_syntax = is_postgres
+        use_postgres_syntax = False
     
     try:
-        if is_postgres:
-            # PostgreSQL
+        if is_mysql:
             engine = get_universal_engine()
             return pd.read_sql_query(query, engine, params=params)
         else:
-            # SQLite
             engine = get_engine()
             return pd.read_sql_query(query, engine, params=params)
             
     except Exception as e:
         # Fallback к SQLite если PostgreSQL недоступен
-        if is_postgres:
+        if is_mysql:
             engine = get_engine()
             # Конвертируем PostgreSQL синтаксис в SQLite если нужно
             sqlite_query = _convert_postgres_to_sqlite(query)
@@ -86,8 +79,8 @@ def _convert_postgres_to_sqlite(query: str) -> str:
 def get_restaurants_with_data() -> pd.DataFrame:
     """Получение списка ресторанов с данными"""
     
-    if os.getenv("DATABASE_URL") and "postgresql" in os.getenv("DATABASE_URL"):
-        # PostgreSQL - из новых таблиц
+    if os.getenv("DATABASE_URL") and "mysql" in os.getenv("DATABASE_URL"):
+        # MySQL - из новых таблиц
         query = """
             SELECT DISTINCT 
                 rm.restaurant_id as id,
@@ -97,13 +90,13 @@ def get_restaurants_with_data() -> pd.DataFrame:
                 MAX(df.stat_date) as last_date
             FROM restaurant_mapping rm
             LEFT JOIN daily_facts df ON rm.restaurant_name = df.restaurant_name
-            WHERE rm.is_active = true
+            WHERE rm.is_active = 1
             GROUP BY rm.restaurant_id, rm.restaurant_name
             HAVING COUNT(df.stat_date) > 0
             ORDER BY rm.restaurant_name
         """
         
-        return execute_query(query, use_postgres_syntax=True)
+        return execute_query(query, use_postgres_syntax=False)
     else:
         # SQLite - старые таблицы
         query = """
