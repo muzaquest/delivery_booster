@@ -18,6 +18,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 import pandas as pd
 import requests
 import re
+import unicodedata
 import math
 import numpy as np
 from sqlalchemy import (
@@ -228,6 +229,87 @@ def _fetch_google_sheet_values(spreadsheet_id: str, range_a1: str, api_key: str)
     return df
 
 
+def _norm_txt(s: str) -> str:
+    s = unicodedata.normalize("NFKC", str(s or ""))
+    s = s.replace("\u00a0", " ").replace("\u2009", " ").replace("\u202f", " ")
+    s = re.sub(r"\s+", " ", s).strip().lower()
+    s = s.replace("ё", "е")
+    # keep punctuation mostly, but normalize trailing question marks to a single one
+    s = re.sub(r"[？?]+$", "?", s)
+    return s
+
+
+def _normalize_fake_orders_df(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+
+    # Normalize headers textual quirks for robust matching
+    original_cols = list(df.columns)
+    normalized_cols = []
+    for c in original_cols:
+        cc = unicodedata.normalize("NFKC", str(c or ""))
+        cc = cc.replace("\u00a0", " ").replace("\u2009", " ").replace("\u202f", " ")
+        cc = re.sub(r"\s+", " ", cc).strip()
+        cc = cc.replace("ё", "е")
+        cc = re.sub(r"[？?]+$", "?", cc)
+        normalized_cols.append(cc)
+    df.columns = normalized_cols
+
+    # Build normalization map: normalized lower name -> original column name
+    norm_map = {_norm_txt(c): c for c in df.columns}
+
+    def pick(names: Iterable[str]) -> Optional[str]:
+        for n in names:
+            key = _norm_txt(n)
+            if key in norm_map:
+                return norm_map[key]
+        return None
+
+    name_col = pick(["какой ресторан?", "ресторан", "restaurant"])
+    date_col = pick(["дата накрутки", "дата", "date"])
+    plat_col = pick(["какая платформа?", "платформа", "platform"])
+    cnt_col = pick([
+        "количество сделанных фейк заказов?",
+        "количество фейк заказов",
+        "сколько",
+        "сколько заказов",
+        "count",
+        "количество",
+    ])
+    if cnt_col is None:
+        for k, orig in norm_map.items():
+            if any(sub in k for sub in ["сколько", "count", "колич"]):
+                cnt_col = orig
+                break
+
+    # Dates normalization
+    if date_col in df.columns:
+        df[date_col] = pd.to_datetime(
+            df[date_col], errors="coerce", dayfirst=True, infer_datetime_format=True
+        )
+
+    # Platform normalization -> {grab, gojek}
+    def norm_platform(x: Any) -> Optional[str]:
+        s = _norm_txt(x)
+        if "grab" in s:
+            return "grab"
+        if ("gojek" in s) or ("go" in s and ("jek" in s or "food" in s)):
+            return "gojek"
+        return None
+
+    if plat_col in df.columns:
+        df[plat_col] = df[plat_col].map(norm_platform)
+
+    # Count normalization: extract digits from arbitrary strings
+    if cnt_col in df.columns:
+        df[cnt_col] = pd.to_numeric(
+            df[cnt_col].astype(str).str.replace(r"[^\d]+", "", regex=True),
+            errors="coerce",
+        ).fillna(0).astype(int)
+
+    return df
+
+
 def load_fake_orders(sheet_url_or_id: Optional[str] = None) -> pd.DataFrame:
     """Load fake orders list from a Google Sheet with environment/file discovery and CSV fallback.
 
@@ -292,6 +374,7 @@ def load_fake_orders(sheet_url_or_id: Optional[str] = None) -> pd.DataFrame:
                     oid = _find_first_column(df, ["id", "order", "order_number", "orderid", "номер заказа"])
                     if oid:
                         df.rename(columns={oid: "order_id"}, inplace=True)
+                df = _normalize_fake_orders_df(df)
                 return df
         except Exception:
             # fall through to CSV export
@@ -307,6 +390,7 @@ def load_fake_orders(sheet_url_or_id: Optional[str] = None) -> pd.DataFrame:
                 oid = _find_first_column(df, ["id", "order", "order_number", "orderid", "номер заказа"])
                 if oid:
                     df.rename(columns={oid: "order_id"}, inplace=True)
+            df = _normalize_fake_orders_df(df)
             return df
 
     return pd.DataFrame()
