@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import io
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import pandas as pd
@@ -228,37 +229,87 @@ def _fetch_google_sheet_values(spreadsheet_id: str, range_a1: str, api_key: str)
 
 
 def load_fake_orders(sheet_url_or_id: Optional[str] = None) -> pd.DataFrame:
-    """Load fake orders list from a Google Sheet.
+    """Load fake orders list from a Google Sheet with environment/file discovery and CSV fallback.
+
+    Steps:
+      1) Determine sheet URL/ID from param, env or files.
+      2) If GOOGLE_API_KEY is set, fetch via Google Sheets API.
+      3) If API fails or key is missing, fetch via public CSV export.
 
     The sheet is expected to include at least one of: order_id, order_number.
     Additional columns (restaurant_id, date, platform) are optional.
     """
+
+    # Helpers for source resolution and CSV fallback
+    def _fake_orders_url() -> Optional[str]:
+        # 1) env
+        env_url = os.getenv("FAKE_ORDERS_SHEET_URL")
+        if env_url:
+            return env_url
+        # 2) repo root file
+        val = _read_first_line("Fake orders")
+        if val:
+            return val
+        # 3) legacy absolute path
+        return _read_first_line("/workspace/Fake orders")
+
+    def _csv_export_url(src: str) -> Optional[str]:
+        sid = _extract_google_sheet_id(src)
+        if not sid:
+            return None
+        return f"https://docs.google.com/spreadsheets/d/{sid}/export?format=csv"
+
+    def _fetch_csv(url: str) -> Optional[pd.DataFrame]:
+        try:
+            resp = requests.get(url, timeout=30)
+            if not resp.ok:
+                return None
+            return pd.read_csv(io.StringIO(resp.text))
+        except Exception:
+            return None
+
+    # 1) Resolve source URL/ID
+    sheet_url_or_id = sheet_url_or_id or _fake_orders_url() or ""
     if not sheet_url_or_id:
-        # Try to read from file '/workspace/Fake orders'
-        sheet_url_or_id = _read_first_line("/workspace/Fake orders") or ""
+        return pd.DataFrame()
+
     spreadsheet_id = _extract_google_sheet_id(sheet_url_or_id)
     api_key = _google_api_key()
-    if not spreadsheet_id or not api_key:
-        return pd.DataFrame()
 
-    sheet_title = _fetch_google_sheet_first_sheet_title(spreadsheet_id, api_key) or "Sheet1"
-    df = _fetch_google_sheet_values(spreadsheet_id, f"{sheet_title}!A:Z", api_key)
-    if df is None or df.empty:
-        # Try fallback title guesses
-        for guess in ("Sheet1", "Fake Orders", "Sheet", "Лист1"):
-            df = _fetch_google_sheet_values(spreadsheet_id, f"{guess}!A:Z", api_key)
+    # 2) Try Google Sheets API if key is available
+    if spreadsheet_id and api_key:
+        try:
+            sheet_title = _fetch_google_sheet_first_sheet_title(spreadsheet_id, api_key) or "Sheet1"
+            df = _fetch_google_sheet_values(spreadsheet_id, f"{sheet_title}!A:Z", api_key)
+            if df is None or df.empty:
+                for guess in ("Sheet1", "Fake Orders", "Sheet", "Лист1"):
+                    df = _fetch_google_sheet_values(spreadsheet_id, f"{guess}!A:Z", api_key)
+                    if df is not None and not df.empty:
+                        break
             if df is not None and not df.empty:
-                break
-    if df is None or df.empty:
-        return pd.DataFrame()
+                df = _normalize_columns(df)
+                if "order_id" not in df.columns:
+                    oid = _find_first_column(df, ["id", "order", "order_number", "orderid", "номер заказа"])
+                    if oid:
+                        df.rename(columns={oid: "order_id"}, inplace=True)
+                return df
+        except Exception:
+            # fall through to CSV export
+            pass
 
-    df = _normalize_columns(df)
-    # Normalize common id column names
-    if "order_id" not in df.columns:
-        oid = _find_first_column(df, ["id", "order", "order_number", "orderid", "номер заказа"])
-        if oid:
-            df.rename(columns={oid: "order_id"}, inplace=True)
-    return df
+    # 3) CSV export fallback (public sheets)
+    csv_url = _csv_export_url(sheet_url_or_id)
+    if csv_url:
+        df = _fetch_csv(csv_url)
+        if df is not None and not df.empty:
+            df = _normalize_columns(df)
+            if "order_id" not in df.columns:
+                oid = _find_first_column(df, ["id", "order", "order_number", "orderid", "номер заказа"])
+                if oid:
+                    df.rename(columns={oid: "order_id"}, inplace=True)
+            return df
+
+    return pd.DataFrame()
 
 
 def load_orders_raw(engine: Engine) -> pd.DataFrame:
