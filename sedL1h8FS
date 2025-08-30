@@ -65,7 +65,7 @@ waitForPort = 5000
 outputType = "webview"
 
 [deployment]
-run = ["bash", "-c", "unset DATABASE_URL && export PYTHONPATH=$PWD:$PYTHONPATH && python -m uvicorn app.main:app --host localhost --port 8000 & sleep 5 && streamlit run streamlit_app.py --server.address 0.0.0.0 --server.port 5000 --server.headless true --server.allowRunOnSave false"]
+run = ["bash", "-lc", "bash scripts/run.sh"]
 deploymentTarget = "autoscale"
 
 [[ports]]

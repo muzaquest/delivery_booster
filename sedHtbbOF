@@ -36,7 +36,7 @@ author = "agent"
 outputType = "webview"
 
 [[workflows.workflow.tasks]]
-task = "shell.exec"
+task = "bash -lc"
 args = "bash -c \"unset DATABASE_URL && export PYTHONPATH=$PWD:$PYTHONPATH && python -m uvicorn app.main:app --host localhost --port 8000 & sleep 5 && streamlit run streamlit_app.py --server.address 0.0.0.0 --server.port 5000 --server.headless true --server.allowRunOnSave false\""
 waitForPort = 5000
 
@@ -48,7 +48,7 @@ author = "agent"
 outputType = "console"
 
 [[workflows.workflow.tasks]]
-task = "shell.exec"
+task = "bash -lc"
 args = "python -m uvicorn app.main:app --host 0.0.0.0 --port 8000"
 waitForPort = 8000
 
@@ -57,7 +57,7 @@ name = "Streamlit Frontend"
 author = "agent"
 
 [[workflows.workflow.tasks]]
-task = "shell.exec"
+task = "bash -lc"
 args = "streamlit run streamlit_app.py --server.address 0.0.0.0 --server.port 5000 --server.headless true --server.allowRunOnSave false --server.enableCORS false --server.enableXsrfProtection false"
 waitForPort = 5000
 
