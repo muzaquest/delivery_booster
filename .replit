@@ -2,7 +2,7 @@ modules = ["bash", "python-3.11"]
 
 [nix]
 channel = "stable-25_05"
-packages = ["glibcLocales", "ocl-icd", "opencl-headers", "sqlite"]
+packages = ["glibcLocales", "ocl-icd", "opencl-headers", "sqlite", "mailutils"]
 
 [workflows]
 runButton = "Restaurant Analytics Platform"
