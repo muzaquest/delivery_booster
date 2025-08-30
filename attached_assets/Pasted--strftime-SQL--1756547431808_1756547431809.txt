@@ -1,0 +1,30 @@
+
+ЗАДАЧА: заменить все использования strftime() в SQL строках отчётов на диалект-зависимые выражения: для MySQL/MariaDB — DATE_FORMAT(), для SQLite — оставить strftime().
+ПРОМТ ДЛЯ АГЕНТА (скопируй целиком):
+Fix report SQL for MySQL date functions (replace SQLite strftime() with DATE_FORMAT() when using a live MySQL/MariaDB DB), keep SQLite working in demo. Do the following precisely:
+1. In app/report_text.py and app/report_basic.py:
+    * Add near the top (after imports) a tiny helper based on the current engine: import os
+    * from app.db_utils import get_engine
+    * _eng = get_engine(os.getenv("DATABASE_URL") or os.getenv("SQLITE_PATH"))
+    * _dialect = _eng.dialect.name  # 'mysql', 'mariadb', 'sqlite', etc.
+    * def sql_month(col="stat_date"):
+    *     return f"DATE_FORMAT({col}, '%Y-%m')" if _dialect in ('mysql','mariadb') else f"strftime('%Y-%m', {col})"
+    * def sql_day(col="stat_date"):
+    *     return f"DATE_FORMAT({col}, '%Y-%m-%d')" if _dialect in ('mysql','mariadb') else f"strftime('%Y-%m-%d', {col})"
+    * 
+    * Replace every SQL occurrence that groups по месяцам/дням:
+        * strftime('%Y-%m', <expr>) → {sql_month('<expr>')} inside f-strings.
+        * strftime('%Y-%m-%d', <expr>) → {sql_day('<expr>')}. Handle variants like stat_date, a.stat_date, b.stat_date. Keep aliases AS ym / AS d and existing GROUP BY ym / GROUP BY d.
+    * Make sure these SQL strings are still wrapped with sa_text(...) and called via pd.read_sql_query(..., params={...}).
+2. In app/data_adapter.py:
+    * In the MySQL/MariaDB branch of any query that still uses strftime() (e.g. for ads, grab/gojek, KPI rollups), switch to DATE_FORMAT() exactly like above. If there is already a dialect flag in the adapter, you may reuse it instead of re-detecting.
+3. Verification:
+    * Run: pkill -f "uvicorn|streamlit" || true
+    * python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 &
+    * sleep 3 && curl -s http://localhost:8000/health
+    * streamlit run streamlit_app.py --server.address 0.0.0.0 --server.port 5000 --server.headless true --server.enableCORS false --server.enableXsrfProtection false --server.fileWatcherType none &
+    * 
+    * Then test MySQL path returns 200 with data (no “strftime does not exist”): curl -s "http://localhost:8000/report-text?period=2025-07-01_2025-07-31&restaurant_id=36" | head -c 300
+    * 
+    * Post back the diff summary of edited lines and the first 300 chars of the response.
+

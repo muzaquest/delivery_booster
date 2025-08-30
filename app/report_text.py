@@ -15,6 +15,17 @@ from etl.data_loader import get_engine
 import numpy as np
 from sqlalchemy import text as sa_text
 import re
+
+# Dialect detection for SQL date functions
+_eng = get_engine(os.getenv("DATABASE_URL") or os.getenv("SQLITE_PATH"))
+_dialect = _eng.dialect.name  # 'mysql', 'mariadb', 'sqlite', etc.
+
+def sql_month(col="stat_date"):
+    return f"DATE_FORMAT({col}, '%Y-%m')" if _dialect in ('mysql','mariadb') else f"strftime('%Y-%m', {col})"
+
+def sql_day(col="stat_date"):
+    return f"DATE_FORMAT({col}, '%Y-%m-%d')" if _dialect in ('mysql','mariadb') else f"strftime('%Y-%m-%d', {col})"
+
 from ml.inference import load_artifacts, _resolve_preprocessed_feature_groups
 from etl.feature_engineering import load_holidays_df
 import shap

@@ -9,6 +9,17 @@ import calendar
 from etl.data_loader import get_engine, load_fake_orders
 from sqlalchemy import text as sa_text
 from etl.feature_engineering import parse_tourist_flow
+import os
+
+# Dialect detection for SQL date functions
+_eng = get_engine(os.getenv("DATABASE_URL") or os.getenv("SQLITE_PATH"))
+_dialect = _eng.dialect.name  # 'mysql', 'mariadb', 'sqlite', etc.
+
+def sql_month(col="stat_date"):
+    return f"DATE_FORMAT({col}, '%Y-%m')" if _dialect in ('mysql','mariadb') else f"strftime('%Y-%m', {col})"
+
+def sql_day(col="stat_date"):
+    return f"DATE_FORMAT({col}, '%Y-%m-%d')" if _dialect in ('mysql','mariadb') else f"strftime('%Y-%m-%d', {col})"
 
 
 def _read_stats(table: str, restaurant_id: Optional[int], start: date, end: date) -> pd.DataFrame:
@@ -238,14 +249,14 @@ def _build_marketing_section(restaurant_id: Optional[int], start: date, end: dat
     def roas_month(table: str) -> Dict[str, float]:
         if restaurant_id is not None:
             q = sa_text(
-                f"SELECT strftime('%Y-%m', stat_date) ym, SUM(ads_sales) s, SUM(ads_spend) b "
+                f"SELECT {sql_month('stat_date')} ym, SUM(ads_sales) s, SUM(ads_spend) b "
                 f"FROM {table} WHERE stat_date BETWEEN :start AND :end AND restaurant_id=:rid "
                 "GROUP BY ym"
             )
             params = {"start": str(start), "end": str(end), "rid": restaurant_id}
         else:
             q = sa_text(
-                f"SELECT strftime('%Y-%m', stat_date) ym, SUM(ads_sales) s, SUM(ads_spend) b "
+                f"SELECT {sql_month('stat_date')} ym, SUM(ads_sales) s, SUM(ads_spend) b "
                 f"FROM {table} WHERE stat_date BETWEEN :start AND :end "
                 "GROUP BY ym"
             )
@@ -312,14 +323,14 @@ def _sum_platform(eng, table: str, restaurant_id: Optional[int], start: date, en
 def _monthly_platform(eng, table: str, restaurant_id: Optional[int], start: date, end: date) -> pd.DataFrame:
     if restaurant_id is not None:
         q = sa_text(
-            f"SELECT strftime('%Y-%m', stat_date) ym, SUM(payouts) payouts, SUM(ads_spend) ads_spend, SUM(ads_sales) ads_sales "
+            f"SELECT {sql_month('stat_date')} ym, SUM(payouts) payouts, SUM(ads_spend) ads_spend, SUM(ads_sales) ads_sales "
             f"FROM {table} WHERE stat_date BETWEEN :start AND :end AND restaurant_id=:rid "
             "GROUP BY ym"
         )
         params = {"start": str(start), "end": str(end), "rid": restaurant_id}
     else:
         q = sa_text(
-            f"SELECT strftime('%Y-%m', stat_date) ym, SUM(payouts) payouts, SUM(ads_spend) ads_spend, SUM(ads_sales) ads_sales "
+            f"SELECT {sql_month('stat_date')} ym, SUM(payouts) payouts, SUM(ads_spend) ads_spend, SUM(ads_sales) ads_sales "
             f"FROM {table} WHERE stat_date BETWEEN :start AND :end "
             "GROUP BY ym"
         )
