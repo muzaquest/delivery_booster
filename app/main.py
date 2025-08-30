@@ -170,13 +170,13 @@ def _resolve_restaurant_id(restaurant_name: Optional[str]) -> Optional[int]:
         eng = get_engine()
         with eng.connect() as conn:
             try:
-                row = conn.execute(text("SELECT id FROM restaurants WHERE name = %s"), (restaurant_name,)).first()
+                row = conn.execute(text("SELECT id FROM restaurants WHERE name = :name"), {"name": restaurant_name}).first()
                 if row:
                     return int(row[0])
             except Exception:
                 pass
             try:
-                row = conn.execute(text("SELECT restaurant_id FROM restaurant_mapping WHERE restaurant_name = %s"), (restaurant_name,)).first()
+                row = conn.execute(text("SELECT restaurant_id FROM restaurant_mapping WHERE restaurant_name = :name"), {"name": restaurant_name}).first()
                 if row:
                     return int(row[0])
             except Exception:
