@@ -7,6 +7,8 @@ import pandas as pd
 import requests
 import streamlit as st
 
+LIVE_DB = bool(os.getenv("DATABASE_URL"))
+
 sys.path.append(os.getenv("PROJECT_ROOT", os.getcwd()))
 
 from etl.data_loader import get_engine
@@ -238,31 +240,38 @@ def _aggregate_kpi(engine, start: date, end: date) -> dict:
                 start_s, end_s = start.strftime('%Y-%m-%d'), end.strftime('%Y-%m-%d')
                 return adapter.get_kpi_data(start_s, end_s)
         except Exception:
-                # Fallback к старому способу
-                start_s, end_s = start.strftime('%Y-%m-%d'), end.strftime('%Y-%m-%d')
-                q = lambda t: pd.read_sql_query(
-                        f"SELECT SUM(sales) sales, SUM(orders) orders, SUM(ads_spend) ads_spend, SUM(ads_sales) ads_sales, AVG(rating) rating, SUM(cancelled_orders) canc FROM {t} WHERE stat_date BETWEEN %s AND %s",
-                        engine, params=(start_s, end_s)
-                )
-                g = q('grab_stats').iloc[0].fillna(0)
-                j = q('gojek_stats').iloc[0].fillna(0)
-                sales = float(g['sales'] + j['sales'])
-                orders = float((g['orders'] or 0) + (j['orders'] or 0))
-                ads_spend = float(g['ads_spend'] + j['ads_spend'])
-                ads_sales = float(g['ads_sales'] + j['ads_sales'])
-                rating = float(((g['rating'] or 0) + (j['rating'] or 0)) / (2 if ((g['rating'] or 0) and (j['rating'] or 0)) else 1) or 0)
-                canc = float((g['canc'] or 0) + (j['canc'] or 0))
-                return {
-                        'sales': sales,
-                        'orders': orders,
-                        'aov': (sales / orders) if orders else 0.0,
-                        'ads_spend': ads_spend,
-                        'ads_sales': ads_sales,
-                        'roas': (ads_sales / ads_spend) if ads_spend else 0.0,
-                        'rating': rating,
-                        'cancels': canc,
-                        'mer': (sales / ads_spend) if ads_spend else 0.0,
-                }
+                if not LIVE_DB:
+                        # Fallback к старому способу только если не живая БД
+                        start_s, end_s = start.strftime('%Y-%m-%d'), end.strftime('%Y-%m-%d')
+                        q = lambda t: pd.read_sql_query(
+                                f"SELECT SUM(sales) sales, SUM(orders) orders, SUM(ads_spend) ads_spend, SUM(ads_sales) ads_sales, AVG(rating) rating, SUM(cancelled_orders) canc FROM {t} WHERE stat_date BETWEEN ? AND ?",
+                                engine, params=(start_s, end_s)
+                        )
+                        g = q('grab_stats').iloc[0].fillna(0)
+                        j = q('gojek_stats').iloc[0].fillna(0)
+                        sales = float(g['sales'] + j['sales'])
+                        orders = float((g['orders'] or 0) + (j['orders'] or 0))
+                        ads_spend = float(g['ads_spend'] + j['ads_spend'])
+                        ads_sales = float(g['ads_sales'] + j['ads_sales'])
+                        rating = float(((g['rating'] or 0) + (j['rating'] or 0)) / (2 if ((g['rating'] or 0) and (j['rating'] or 0)) else 1) or 0)
+                        canc = float((g['canc'] or 0) + (j['canc'] or 0))
+                        return {
+                                'sales': sales,
+                                'orders': orders,
+                                'aov': (sales / orders) if orders else 0.0,
+                                'ads_spend': ads_spend,
+                                'ads_sales': ads_sales,
+                                'roas': (ads_sales / ads_spend) if ads_spend else 0.0,
+                                'rating': rating,
+                                'cancels': canc,
+                                'mer': (sales / ads_spend) if ads_spend else 0.0,
+                        }
+                else:
+                        # Если живая БД, но адаптер не работает - возвращаем пустые данные
+                        return {
+                                'sales': 0.0, 'orders': 0.0, 'aov': 0.0, 'ads_spend': 0.0,
+                                'ads_sales': 0.0, 'roas': 0.0, 'rating': 0.0, 'cancels': 0.0, 'mer': 0.0
+                        }
 
 
 def _delta(a: float, b: float) -> float:
@@ -273,7 +282,10 @@ def _delta(a: float, b: float) -> float:
 
 def tab_base_analysis():
         st.header('Анализ базы (KPI)')
-        eng = get_engine(os.getenv("SQLITE_PATH"))
+        if not LIVE_DB:
+                eng = get_engine(os.getenv("SQLITE_PATH"))
+        else:
+                eng = None
         presets = _period_presets()
         preset = st.selectbox('Период (пресеты)', list(presets.keys()), key='base_analysis_preset')
         start_default, end_default = presets[preset]
@@ -446,8 +458,8 @@ def _show_data_status():
                 adapter = get_data_adapter()
                 status = adapter.get_data_status()
                 
-                if status.get("status") == "live":
-                        st.success(f"🔄 Live данные: {status.get('restaurants')} ресторанов, последняя синхронизация: {status.get('last_sync', 'неизвестно')}")
+                if LIVE_DB:
+                        st.success(f"🔄 Подключена живая БД (MySQL): {status.get('restaurants', 0)} ресторанов")
                 elif status.get("status") == "static":
                         st.warning(f"📁 Статичные данные: {status.get('restaurants')} ресторанов. Для live данных настройте DATABASE_URL.")
                 else:
