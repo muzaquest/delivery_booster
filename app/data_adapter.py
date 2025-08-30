@@ -7,6 +7,7 @@ import os
 import pandas as pd
 from typing import Optional, Dict, Any, List
 from datetime import datetime, date
+from sqlalchemy import text as sa_text
 
 from etl.data_loader import get_engine
 
@@ -24,14 +25,14 @@ class DataAdapter:
         """Получение списка ресторанов"""
         
         if self.use_mysql:
-            query = """
+            query = sa_text("""
                 SELECT restaurant_id as id, restaurant_name as name 
                 FROM restaurant_mapping 
                 WHERE is_active = 1 
                 ORDER BY restaurant_name
-            """
+            """)
         else:
-            query = "SELECT id, name FROM restaurants ORDER BY name"
+            query = sa_text("SELECT id, name FROM restaurants ORDER BY name")
         
         return pd.read_sql_query(query, self.engine)
     
@@ -40,7 +41,7 @@ class DataAdapter:
         
         if self.use_mysql:
             # Получаем название ресторана
-            name_query = "SELECT restaurant_name FROM restaurant_mapping WHERE restaurant_id = :rid"
+            name_query = sa_text("SELECT restaurant_name FROM restaurant_mapping WHERE restaurant_id = :rid")
             name_df = pd.read_sql_query(name_query, self.engine, params={"rid": restaurant_id})
             restaurant_name = name_df.iloc[0][0] if not name_df.empty else None
             
@@ -48,7 +49,7 @@ class DataAdapter:
                 return {"grab": pd.DataFrame(), "gojek": pd.DataFrame()}
             
             # Данные из витрины
-            grab_query = """
+            grab_query = sa_text("""
                 SELECT 
                     stat_date,
                     grab_sales as sales,
@@ -62,9 +63,9 @@ class DataAdapter:
                 WHERE restaurant_name = :rname AND stat_date BETWEEN :start AND :end
                 AND grab_sales > 0
                 ORDER BY stat_date
-            """
+            """)
             
-            gojek_query = """
+            gojek_query = sa_text("""
                 SELECT 
                     stat_date,
                     gojek_sales as sales,
@@ -81,7 +82,7 @@ class DataAdapter:
                 WHERE restaurant_name = :rname AND stat_date BETWEEN :start AND :end
                 AND gojek_sales > 0
                 ORDER BY stat_date
-            """
+            """)
             
             params = {"rname": restaurant_name, "start": start_date, "end": end_date}
             grab_df = pd.read_sql_query(grab_query, self.engine, params=params)
@@ -89,24 +90,24 @@ class DataAdapter:
             
         else:
             # Старые запросы к SQLite
-            grab_query = """
+            grab_query = sa_text("""
                 SELECT stat_date, sales, orders, ads_spend, ads_sales, cancelled_orders, 
                        rating, offline_rate
                 FROM grab_stats 
-                WHERE restaurant_id = ? AND stat_date BETWEEN ? AND ?
+                WHERE restaurant_id = :rid AND stat_date BETWEEN :start AND :end
                 ORDER BY stat_date
-            """
+            """)
             
-            gojek_query = """
+            gojek_query = sa_text("""
                 SELECT stat_date, sales, orders, ads_spend, ads_sales, cancelled_orders,
                        lost_orders, rating, preparation_time, accepting_time, delivery_time
                 FROM gojek_stats 
-                WHERE restaurant_id = ? AND stat_date BETWEEN ? AND ?
+                WHERE restaurant_id = :rid AND stat_date BETWEEN :start AND :end
                 ORDER BY stat_date
-            """
+            """)
             
-            grab_df = pd.read_sql_query(grab_query, self.engine, params=(restaurant_id, start_date, end_date))
-            gojek_df = pd.read_sql_query(gojek_query, self.engine, params=(restaurant_id, start_date, end_date))
+            grab_df = pd.read_sql_query(grab_query, self.engine, params={"rid": restaurant_id, "start": start_date, "end": end_date})
+            gojek_df = pd.read_sql_query(gojek_query, self.engine, params={"rid": restaurant_id, "start": start_date, "end": end_date})
         
         return {"grab": grab_df, "gojek": gojek_df}
     
@@ -114,7 +115,7 @@ class DataAdapter:
         """Получение KPI данных для панели"""
         
         if self.use_mysql:
-            query = """
+            query = sa_text("""
                 SELECT 
                     SUM(total_sales) as sales,
                     SUM(total_orders) as orders,
@@ -124,7 +125,7 @@ class DataAdapter:
                     SUM(total_cancelled) as cancels
                 FROM daily_facts
                 WHERE stat_date BETWEEN :start AND :end
-            """
+            """)
             
             df = pd.read_sql_query(query, self.engine, params={"start": start_date, "end": end_date})
             if not df.empty:
@@ -155,20 +156,20 @@ class DataAdapter:
     def _get_kpi_sqlite(self, start_date: str, end_date: str) -> Dict[str, float]:
         """KPI из SQLite (старый способ)"""
         
-        grab_query = """
+        grab_query = sa_text("""
             SELECT SUM(sales) sales, SUM(orders) orders, SUM(ads_spend) ads_spend, 
                    SUM(ads_sales) ads_sales, AVG(rating) rating, SUM(cancelled_orders) canc 
-            FROM grab_stats WHERE stat_date BETWEEN ? AND ?
-        """
+            FROM grab_stats WHERE stat_date BETWEEN :start AND :end
+        """)
         
-        gojek_query = """
+        gojek_query = sa_text("""
             SELECT SUM(sales) sales, SUM(orders) orders, SUM(ads_spend) ads_spend, 
                    SUM(ads_sales) ads_sales, AVG(rating) rating, SUM(cancelled_orders) canc 
-            FROM gojek_stats WHERE stat_date BETWEEN ? AND ?
-        """
+            FROM gojek_stats WHERE stat_date BETWEEN :start AND :end
+        """)
         
-        g = pd.read_sql_query(grab_query, self.engine, params=(start_date, end_date)).iloc[0].fillna(0)
-        j = pd.read_sql_query(gojek_query, self.engine, params=(start_date, end_date)).iloc[0].fillna(0)
+        g = pd.read_sql_query(grab_query, self.engine, params={"start": start_date, "end": end_date}).iloc[0].fillna(0)
+        j = pd.read_sql_query(gojek_query, self.engine, params={"start": start_date, "end": end_date}).iloc[0].fillna(0)
         
         sales = float(g['sales'] + j['sales'])
         orders = float((g['orders'] or 0) + (j['orders'] or 0))
@@ -194,18 +195,18 @@ class DataAdapter:
         
         if self.use_mysql:
             # Получаем название ресторана
-            name_query = "SELECT restaurant_name FROM restaurant_mapping WHERE restaurant_id = :rid"
+            name_query = sa_text("SELECT restaurant_name FROM restaurant_mapping WHERE restaurant_id = :rid")
             name_df = pd.read_sql_query(name_query, self.engine, params={"rid": restaurant_id})
             restaurant_name = name_df.iloc[0][0] if not name_df.empty else None
             
             if not restaurant_name:
                 return pd.DataFrame()
             
-            query = """
+            query = sa_text("""
                 SELECT * FROM ml_dataset
                 WHERE restaurant_name = :rname AND stat_date BETWEEN :start AND :end
                 ORDER BY stat_date
-            """
+            """)
             
             return pd.read_sql_query(query, self.engine, params={"rname": restaurant_name, "start": start_date, "end": end_date})
         else:
@@ -226,14 +227,14 @@ class DataAdapter:
         if self.use_mysql:
             try:
                 df = pd.read_sql_query(
-                    """
+                    sa_text("""
                         SELECT 
                             COUNT(DISTINCT restaurant_name) as restaurants,
                             COUNT(*) as total_days,
                             MIN(stat_date) as first_date,
                             MAX(stat_date) as last_date
                         FROM daily_facts
-                    """,
+                    """),
                     self.engine,
                 )
                 if not df.empty:
@@ -250,12 +251,12 @@ class DataAdapter:
         
         # Fallback к SQLite
         try:
-            query = """
+            query = sa_text("""
                 SELECT 
                     COUNT(DISTINCT restaurant_id) as restaurants,
                     COUNT(*) as grab_records
                 FROM grab_stats
-            """
+            """)
             result = pd.read_sql_query(query, self.engine)
             
             if not result.empty:

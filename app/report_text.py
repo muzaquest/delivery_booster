@@ -13,7 +13,19 @@ from app.report_basic import (
 )
 from etl.data_loader import get_engine
 import numpy as np
+from sqlalchemy import text as sa_text
 import re
+
+# Dialect detection for SQL date functions
+_eng = get_engine(os.getenv("DATABASE_URL") or os.getenv("SQLITE_PATH"))
+_dialect = _eng.dialect.name  # 'mysql', 'mariadb', 'sqlite', etc.
+
+def sql_month(col="stat_date"):
+    return f"DATE_FORMAT({col}, '%Y-%m')" if _dialect in ('mysql','mariadb') else f"strftime('%Y-%m', {col})"
+
+def sql_day(col="stat_date"):
+    return f"DATE_FORMAT({col}, '%Y-%m-%d')" if _dialect in ('mysql','mariadb') else f"strftime('%Y-%m-%d', {col})"
+
 from ml.inference import load_artifacts, _resolve_preprocessed_feature_groups
 from etl.feature_engineering import load_holidays_df
 import shap
@@ -307,11 +319,11 @@ def _section6_operations(period: str, restaurant_id: int) -> str:
     end = pd.to_datetime(end_str)
 
     # GRAB driver_waiting_time JSON average (seconds -> minutes if needed)
-    qg = (
-        "SELECT driver_waiting_time FROM grab_stats WHERE restaurant_id=? AND stat_date BETWEEN ? AND ? "
+    qg = sa_text(
+        "SELECT driver_waiting_time FROM grab_stats WHERE restaurant_id=:rid AND stat_date BETWEEN :start AND :end "
         "AND driver_waiting_time IS NOT NULL"
     )
-    g = pd.read_sql_query(qg, eng, params=(restaurant_id, start_str, end_str))
+    g = pd.read_sql_query(qg, eng, params={"rid": restaurant_id, "start": start_str, "end": end_str})
     grab_wait_vals = []
     for v in g['driver_waiting_time'].dropna().tolist():
         try:
@@ -334,11 +346,11 @@ def _section6_operations(period: str, restaurant_id: int) -> str:
     grab_wait_avg = sum(grab_wait_vals)/len(grab_wait_vals) if grab_wait_vals else None
 
     # GOJEK times
-    qj = (
+    qj = sa_text(
         "SELECT accepting_time, preparation_time, delivery_time, driver_waiting, close_time, stat_date "
-        "FROM gojek_stats WHERE restaurant_id=? AND stat_date BETWEEN ? AND ?"
+        "FROM gojek_stats WHERE restaurant_id=:rid AND stat_date BETWEEN :start AND :end"
     )
-    j = pd.read_sql_query(qj, eng, params=(restaurant_id, start_str, end_str))
+    j = pd.read_sql_query(qj, eng, params={"rid": restaurant_id, "start": start_str, "end": end_str})
     acc = pd.Series([_parse_time_to_minutes(x) for x in j['accepting_time'] if pd.notna(x)])
     prep = pd.Series([_parse_time_to_minutes(x) for x in j['preparation_time'] if pd.notna(x)])
     delv = pd.Series([_parse_time_to_minutes(x) for x in j['delivery_time'] if pd.notna(x)])
@@ -346,17 +358,17 @@ def _section6_operations(period: str, restaurant_id: int) -> str:
 
     # cancellations
     Cg = pd.read_sql_query(
-        "SELECT SUM(cancelled_orders) c FROM grab_stats WHERE restaurant_id=? AND stat_date BETWEEN ? AND ?",
-        eng, params=(restaurant_id, start_str, end_str)
+        sa_text("SELECT SUM(cancelled_orders) c FROM grab_stats WHERE restaurant_id=:rid AND stat_date BETWEEN :start AND :end"),
+        eng, params={"rid": restaurant_id, "start": start_str, "end": end_str}
     ).iloc[0]['c'] or 0
     Cj_row = pd.read_sql_query(
-        "SELECT SUM(cancelled_orders) c, SUM(lost_orders) l FROM gojek_stats WHERE restaurant_id=? AND stat_date BETWEEN ? AND ?",
-        eng, params=(restaurant_id, start_str, end_str)
+        sa_text("SELECT SUM(cancelled_orders) c, SUM(lost_orders) l FROM gojek_stats WHERE restaurant_id=:rid AND stat_date BETWEEN :start AND :end"),
+        eng, params={"rid": restaurant_id, "start": start_str, "end": end_str}
     ).iloc[0]
     Cj = Cj_row['c'] or 0; Lj = Cj_row['l'] or 0
     orders_total = (
-        (pd.read_sql_query("SELECT SUM(orders) o FROM grab_stats WHERE restaurant_id=? AND stat_date BETWEEN ? AND ?", eng, params=(restaurant_id, start_str, end_str)).iloc[0]['o'] or 0)
-        + (pd.read_sql_query("SELECT SUM(orders) o FROM gojek_stats WHERE restaurant_id=? AND stat_date BETWEEN ? AND ?", eng, params=(restaurant_id, start_str, end_str)).iloc[0]['o'] or 0)
+        (pd.read_sql_query(sa_text("SELECT SUM(orders) o FROM grab_stats WHERE restaurant_id=:rid AND stat_date BETWEEN :start AND :end"), eng, params={"rid": restaurant_id, "start": start_str, "end": end_str}).iloc[0]['o'] or 0)
+        + (pd.read_sql_query(sa_text("SELECT SUM(orders) o FROM gojek_stats WHERE restaurant_id=:rid AND stat_date BETWEEN :start AND :end"), eng, params={"rid": restaurant_id, "start": start_str, "end": end_str}).iloc[0]['o'] or 0)
     )
     cancel_rate = ((Cg + Cj) / orders_total * 100.0) if orders_total else None
 
@@ -364,8 +376,8 @@ def _section6_operations(period: str, restaurant_id: int) -> str:
     events = []
     # GRAB offline_rate in minutes
     og = pd.read_sql_query(
-        "SELECT stat_date, offline_rate FROM grab_stats WHERE restaurant_id=? AND stat_date BETWEEN ? AND ? AND offline_rate IS NOT NULL",
-        eng, params=(restaurant_id, start_str, end_str)
+        sa_text("SELECT stat_date, offline_rate FROM grab_stats WHERE restaurant_id=:rid AND stat_date BETWEEN :start AND :end AND offline_rate IS NOT NULL"),
+        eng, params={"rid": restaurant_id, "start": start_str, "end": end_str}
     )
     for _, row in og.iterrows():
         mins = float(row['offline_rate'] or 0)
@@ -373,8 +385,8 @@ def _section6_operations(period: str, restaurant_id: int) -> str:
             events.append((pd.to_datetime(row['stat_date']).date(), 'GRAB', mins/60.0))
     # GOJEK close_time HH:MM:SS
     oj = pd.read_sql_query(
-        "SELECT stat_date, close_time FROM gojek_stats WHERE restaurant_id=? AND stat_date BETWEEN ? AND ?",
-        eng, params=(restaurant_id, start_str, end_str)
+        sa_text("SELECT stat_date, close_time FROM gojek_stats WHERE restaurant_id=:rid AND stat_date BETWEEN :start AND :end"),
+        eng, params={"rid": restaurant_id, "start": start_str, "end": end_str}
     )
     for _, row in oj.iterrows():
         ct = str(row['close_time']) if pd.notna(row['close_time']) else ''
@@ -393,12 +405,12 @@ def _section6_operations(period: str, restaurant_id: int) -> str:
     # average hourly revenue by platform
     # platform sales
     sg = pd.read_sql_query(
-        "SELECT SUM(sales) s FROM grab_stats WHERE restaurant_id=? AND stat_date BETWEEN ? AND ?",
-        eng, params=(restaurant_id, start_str, end_str)
+        sa_text("SELECT SUM(sales) s FROM grab_stats WHERE restaurant_id=:rid AND stat_date BETWEEN :start AND :end"),
+        eng, params={"rid": restaurant_id, "start": start_str, "end": end_str}
     ).iloc[0]['s'] or 0.0
     sj = pd.read_sql_query(
-        "SELECT SUM(sales) s FROM gojek_stats WHERE restaurant_id=? AND stat_date BETWEEN ? AND ?",
-        eng, params=(restaurant_id, start_str, end_str)
+        sa_text("SELECT SUM(sales) s FROM gojek_stats WHERE restaurant_id=:rid AND stat_date BETWEEN :start AND :end"),
+        eng, params={"rid": restaurant_id, "start": start_str, "end": end_str}
     ).iloc[0]['s'] or 0.0
     num_days = (end - start).days + 1
     hr_g = (sg / (num_days*24.0)) if num_days>0 else 0.0
@@ -455,17 +467,17 @@ def _section6_operations(period: str, restaurant_id: int) -> str:
 def _section3_clients(period: str, restaurant_id: int) -> str:
     eng = get_engine()
     start_str, end_str = period.split("_")
-    qg = (
+    qg = sa_text(
         "SELECT SUM(new_customers) new, SUM(repeated_customers) rep, SUM(reactivated_customers) rea, SUM(total_customers) tot, "
         "SUM(earned_new_customers) enew, SUM(earned_repeated_customers) erep, SUM(earned_reactivated_customers) erea "
-        "FROM grab_stats WHERE restaurant_id=? AND stat_date BETWEEN ? AND ?"
+        "FROM grab_stats WHERE restaurant_id=:rid AND stat_date BETWEEN :start AND :end"
     )
-    qj = (
+    qj = sa_text(
         "SELECT SUM(new_client) new, SUM(active_client) act, SUM(returned_client) ret "
-        "FROM gojek_stats WHERE restaurant_id=? AND stat_date BETWEEN ? AND ?"
+        "FROM gojek_stats WHERE restaurant_id=:rid AND stat_date BETWEEN :start AND :end"
     )
-    g = pd.read_sql_query(qg, eng, params=(restaurant_id, start_str, end_str)).iloc[0].fillna(0)
-    j = pd.read_sql_query(qj, eng, params=(restaurant_id, start_str, end_str)).iloc[0].fillna(0)
+    g = pd.read_sql_query(qg, eng, params={"rid": restaurant_id, "start": start_str, "end": end_str}).iloc[0].fillna(0)
+    j = pd.read_sql_query(qj, eng, params={"rid": restaurant_id, "start": start_str, "end": end_str}).iloc[0].fillna(0)
     grab_new, grab_rep, grab_rea, grab_tot = int(g['new']), int(g['rep']), int(g['rea']), int(g['tot'])
     gojek_new, gojek_act, gojek_ret = int(j['new']), int(j['act']), int(j['ret'])
     total_unique = grab_tot + gojek_new + gojek_act + gojek_ret  # верхняя оценка

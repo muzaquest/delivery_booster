@@ -5,7 +5,7 @@ channel = "stable-25_05"
 packages = ["glibcLocales", "ocl-icd", "opencl-headers", "sqlite"]
 
 [workflows]
-runButton = "Restaurant Analytics Platform"
+runButton = "Project"
 
 [[workflows.workflow]]
 name = "Project"
@@ -37,7 +37,7 @@ outputType = "webview"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "bash -lc 'bash scripts/run.sh'"
+args = "bash scripts/run.sh"
 waitForPort = 5000
 
 [[workflows.workflow]]
@@ -65,7 +65,7 @@ waitForPort = 5000
 outputType = "webview"
 
 [deployment]
-run = ["bash", "-lc", "bash scripts/run.sh"]
+run = ["bash", "-c", "unset DATABASE_URL && export PYTHONPATH=$PWD:$PYTHONPATH && python -m uvicorn app.main:app --host localhost --port 8000 & sleep 5 && streamlit run streamlit_app.py --server.address 0.0.0.0 --server.port 5000 --server.headless true --server.allowRunOnSave false"]
 deploymentTarget = "autoscale"
 
 [[ports]]
@@ -79,6 +79,7 @@ externalPort = 5000
 [[ports]]
 localPort = 8000
 externalPort = 8000
+exposeLocalhost = true
 
 [env]
 PYTHONPATH = "$PYTHONPATH:."

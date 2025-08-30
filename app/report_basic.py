@@ -7,7 +7,19 @@ import numpy as np
 import calendar
 
 from etl.data_loader import get_engine, load_fake_orders
+from sqlalchemy import text as sa_text
 from etl.feature_engineering import parse_tourist_flow
+import os
+
+# Dialect detection for SQL date functions
+_eng = get_engine(os.getenv("DATABASE_URL") or os.getenv("SQLITE_PATH"))
+_dialect = _eng.dialect.name  # 'mysql', 'mariadb', 'sqlite', etc.
+
+def sql_month(col="stat_date"):
+    return f"DATE_FORMAT({col}, '%Y-%m')" if _dialect in ('mysql','mariadb') else f"strftime('%Y-%m', {col})"
+
+def sql_day(col="stat_date"):
+    return f"DATE_FORMAT({col}, '%Y-%m-%d')" if _dialect in ('mysql','mariadb') else f"strftime('%Y-%m-%d', {col})"
 
 
 def _read_stats(table: str, restaurant_id: Optional[int], start: date, end: date) -> pd.DataFrame:
@@ -159,13 +171,20 @@ def _workday_stats(df_all: pd.DataFrame) -> Dict[str, float]:
 def _build_marketing_section(restaurant_id: Optional[int], start: date, end: date) -> Dict:
     eng = get_engine()
     # GRAB stats (funnel available)
-    qg = (
-        "SELECT stat_date, impressions, unique_impressions_reach, unique_menu_visits, "
-        "unique_add_to_carts, unique_conversion_reach, ads_orders, ads_spend, ads_sales "
-        "FROM grab_stats WHERE stat_date BETWEEN ? AND ?"
-        + (" AND restaurant_id=?" if restaurant_id is not None else "")
-    )
-    params = tuple([str(start), str(end)] + ([restaurant_id] if restaurant_id is not None else []))
+    if restaurant_id is not None:
+        qg = sa_text(
+            "SELECT stat_date, impressions, unique_impressions_reach, unique_menu_visits, "
+            "unique_add_to_carts, unique_conversion_reach, ads_orders, ads_spend, ads_sales "
+            "FROM grab_stats WHERE stat_date BETWEEN :start AND :end AND restaurant_id=:rid"
+        )
+        params = {"start": str(start), "end": str(end), "rid": restaurant_id}
+    else:
+        qg = sa_text(
+            "SELECT stat_date, impressions, unique_impressions_reach, unique_menu_visits, "
+            "unique_add_to_carts, unique_conversion_reach, ads_orders, ads_spend, ads_sales "
+            "FROM grab_stats WHERE stat_date BETWEEN :start AND :end"
+        )
+        params = {"start": str(start), "end": str(end)}
     grab = pd.read_sql_query(qg, eng, params=params, parse_dates=["stat_date"]) if eng else pd.DataFrame()
     grab.columns = [c.lower() for c in grab.columns]
     funnel = {}
@@ -228,13 +247,20 @@ def _build_marketing_section(restaurant_id: Optional[int], start: date, end: dat
 
     # ROAS by month per platform
     def roas_month(table: str) -> Dict[str, float]:
-        q = (
-            "SELECT strftime('%Y-%m', stat_date) ym, SUM(ads_sales) s, SUM(ads_spend) b "
-            f"FROM {table} WHERE stat_date BETWEEN ? AND ?"
-            + (" AND restaurant_id=?" if restaurant_id is not None else "")
-            + " GROUP BY ym"
-        )
-        params = tuple([str(start), str(end)] + ([restaurant_id] if restaurant_id is not None else []))
+        if restaurant_id is not None:
+            q = sa_text(
+                f"SELECT {sql_month('stat_date')} ym, SUM(ads_sales) s, SUM(ads_spend) b "
+                f"FROM {table} WHERE stat_date BETWEEN :start AND :end AND restaurant_id=:rid "
+                "GROUP BY ym"
+            )
+            params = {"start": str(start), "end": str(end), "rid": restaurant_id}
+        else:
+            q = sa_text(
+                f"SELECT {sql_month('stat_date')} ym, SUM(ads_sales) s, SUM(ads_spend) b "
+                f"FROM {table} WHERE stat_date BETWEEN :start AND :end "
+                "GROUP BY ym"
+            )
+            params = {"start": str(start), "end": str(end)}
         df = pd.read_sql_query(q, eng, params=params, parse_dates=["ym"]) if eng else pd.DataFrame()
         res = {}
         if not df.empty:
@@ -281,12 +307,12 @@ def _sum_platform(eng, table: str, restaurant_id: Optional[int], start: date, en
     base = f"SELECT SUM(sales) sales, SUM(payouts) payouts, SUM(ads_spend) ads_spend, SUM(ads_sales) ads_sales"
     if table == "grab_stats":
         base += ", SUM(ads_orders) ads_orders"
-    base += f" FROM {table} WHERE stat_date BETWEEN ? AND ?"
-    params = [str(start), str(end)]
+    base += f" FROM {table} WHERE stat_date BETWEEN :start AND :end"
+    params = {"start": str(start), "end": str(end)}
     if restaurant_id is not None:
-        base += " AND restaurant_id=?"
-        params.append(restaurant_id)
-    df = pd.read_sql_query(base, eng, params=tuple(params))
+        base += " AND restaurant_id=:rid"
+        params["rid"] = restaurant_id
+    df = pd.read_sql_query(sa_text(base), eng, params=params)
     rec = df.iloc[0].to_dict() if not df.empty else {}
     out = {k: float(rec.get(k) or 0.0) for k in ["sales", "payouts", "ads_spend", "ads_sales"]}
     if table == "grab_stats":
@@ -295,14 +321,21 @@ def _sum_platform(eng, table: str, restaurant_id: Optional[int], start: date, en
 
 
 def _monthly_platform(eng, table: str, restaurant_id: Optional[int], start: date, end: date) -> pd.DataFrame:
-    q = (
-        f"SELECT strftime('%Y-%m', stat_date) ym, SUM(payouts) payouts, SUM(ads_spend) ads_spend, SUM(ads_sales) ads_sales "
-        f"FROM {table} WHERE stat_date BETWEEN ? AND ?"
-        + (" AND restaurant_id=?" if restaurant_id is not None else "")
-        + " GROUP BY ym"
-    )
-    params = [str(start), str(end)] + ([restaurant_id] if restaurant_id is not None else [])
-    df = pd.read_sql_query(q, eng, params=tuple(params))
+    if restaurant_id is not None:
+        q = sa_text(
+            f"SELECT {sql_month('stat_date')} ym, SUM(payouts) payouts, SUM(ads_spend) ads_spend, SUM(ads_sales) ads_sales "
+            f"FROM {table} WHERE stat_date BETWEEN :start AND :end AND restaurant_id=:rid "
+            "GROUP BY ym"
+        )
+        params = {"start": str(start), "end": str(end), "rid": restaurant_id}
+    else:
+        q = sa_text(
+            f"SELECT {sql_month('stat_date')} ym, SUM(payouts) payouts, SUM(ads_spend) ads_spend, SUM(ads_sales) ads_sales "
+            f"FROM {table} WHERE stat_date BETWEEN :start AND :end "
+            "GROUP BY ym"
+        )
+        params = {"start": str(start), "end": str(end)}
+    df = pd.read_sql_query(q, eng, params=params)
     df["ym"] = df["ym"].astype(str)
     return df
 
@@ -414,7 +447,7 @@ def build_marketing_report(period: str, restaurant_id: Optional[int]) -> Dict:
 
 def _get_restaurant_name(eng, restaurant_id: int) -> Optional[str]:
     try:
-        df = pd.read_sql_query("SELECT name FROM restaurants WHERE id = ?", eng, params=(restaurant_id,))
+        df = pd.read_sql_query(sa_text("SELECT name FROM restaurants WHERE id = :rid"), eng, params={"rid": restaurant_id})
         if not df.empty:
             return str(df.iloc[0]["name"]) if df.iloc[0]["name"] is not None else None
     except Exception:
@@ -465,13 +498,13 @@ def build_quality_report(period: str, restaurant_id: int) -> Dict:
     start = pd.to_datetime(start_str).date()
     end = pd.to_datetime(end_str).date()
     # Ratings from GOJEK
-    q = (
+    q = sa_text(
         "SELECT SUM(five_star_ratings) five, SUM(four_star_ratings) four, "
         "SUM(three_star_ratings) three, SUM(two_star_ratings) two, SUM(one_star_ratings) one, "
         "SUM(orders) orders, SUM(accepted_orders) accepted, SUM(cancelled_orders) cancelled, SUM(lost_orders) lost "
-        "FROM gojek_stats WHERE restaurant_id=? AND stat_date BETWEEN ? AND ?"
+        "FROM gojek_stats WHERE restaurant_id=:rid AND stat_date BETWEEN :start AND :end"
     )
-    df = pd.read_sql_query(q, eng, params=(restaurant_id, str(start), str(end)))
+    df = pd.read_sql_query(q, eng, params={"rid": restaurant_id, "start": str(start), "end": str(end)})
     row = df.iloc[0] if not df.empty else pd.Series()
     five = int(row.get('five') or 0)
     four = int(row.get('four') or 0)
@@ -570,18 +603,31 @@ def build_basic_report(period: str, restaurant_id: Optional[int]) -> Dict:
     clients_summary = {}
     try:
         # GRAB new/repeated/reactivated (ads-based counters)
-        qg = (
-            "SELECT SUM(new_customers) new, SUM(repeated_customers) rep, SUM(reactivated_customers) rea, SUM(total_customers) tot "
-            "FROM grab_stats WHERE stat_date BETWEEN ? AND ?" + (" AND restaurant_id=?" if restaurant_id is not None else "")
-        )
-        params = [str(start), str(end)] + ([restaurant_id] if restaurant_id is not None else [])
-        cg = pd.read_sql_query(qg, eng, params=tuple(params)).iloc[0].fillna(0)
+        if restaurant_id is not None:
+            qg = sa_text(
+                "SELECT SUM(new_customers) new, SUM(repeated_customers) rep, SUM(reactivated_customers) rea, SUM(total_customers) tot "
+                "FROM grab_stats WHERE stat_date BETWEEN :start AND :end AND restaurant_id=:rid"
+            )
+            params = {"start": str(start), "end": str(end), "rid": restaurant_id}
+        else:
+            qg = sa_text(
+                "SELECT SUM(new_customers) new, SUM(repeated_customers) rep, SUM(reactivated_customers) rea, SUM(total_customers) tot "
+                "FROM grab_stats WHERE stat_date BETWEEN :start AND :end"
+            )
+            params = {"start": str(start), "end": str(end)}
+        cg = pd.read_sql_query(qg, eng, params=params).iloc[0].fillna(0)
         # GOJEK new/active/returned
-        qj = (
-            "SELECT SUM(new_client) new, SUM(active_client) act, SUM(returned_client) ret "
-            "FROM gojek_stats WHERE stat_date BETWEEN ? AND ?" + (" AND restaurant_id=?" if restaurant_id is not None else "")
-        )
-        cj = pd.read_sql_query(qj, eng, params=tuple(params)).iloc[0].fillna(0)
+        if restaurant_id is not None:
+            qj = sa_text(
+                "SELECT SUM(new_client) new, SUM(active_client) act, SUM(returned_client) ret "
+                "FROM gojek_stats WHERE stat_date BETWEEN :start AND :end AND restaurant_id=:rid"
+            )
+        else:
+            qj = sa_text(
+                "SELECT SUM(new_client) new, SUM(active_client) act, SUM(returned_client) ret "
+                "FROM gojek_stats WHERE stat_date BETWEEN :start AND :end"
+            )
+        cj = pd.read_sql_query(qj, eng, params=params).iloc[0].fillna(0)
         clients_summary = {
             "total_unique": int((cg.get('tot') or 0) + (cj.get('new') or 0) + (cj.get('act') or 0) + (cj.get('ret') or 0)),
             "grab": {

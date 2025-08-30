@@ -606,9 +606,9 @@ def _guess_restaurant_name(engine: Engine, restaurant_id: int) -> Optional[str]:
         if table in inspector.get_table_names():
             try:
                 df = pd.read_sql_query(
-                    f"SELECT * FROM {table} WHERE restaurant_id = :rid LIMIT 1",
+                    f"SELECT * FROM {table} WHERE restaurant_id = %s LIMIT 1",
                     engine,
-                    params={"rid": restaurant_id},
+                    params=(restaurant_id,),
                 )
                 if not df.empty:
                     df = _normalize_columns(df)
@@ -626,7 +626,7 @@ def get_restaurant_coordinates(restaurant_id: int, restaurant_name: str, engine:
     # 1) Try restaurants table for lat/lon if exists
     inspector = inspect(engine)
     if "restaurants" in inspector.get_table_names():
-        df_rest = pd.read_sql_query("SELECT * FROM restaurants WHERE id = :rid", engine, params={"rid": restaurant_id})
+        df_rest = pd.read_sql_query("SELECT * FROM restaurants WHERE id = %s", engine, params={"rid": restaurant_id})
         df_norm = _normalize_columns(df_rest)
         for lat_col in ("latitude", "lat"):
             if lat_col in df_norm.columns:
@@ -690,7 +690,7 @@ def get_weather_for_restaurant(restaurant_id: int, date: dt.date, engine: Option
     # Fetch restaurant coordinates (from restaurants table or geocode cache)
     with engine.begin() as conn:
         if restaurants_table in inspector.get_table_names():
-            df_rest = pd.read_sql_query(f"SELECT * FROM {restaurants_table} WHERE id = :rid", conn, params={"rid": restaurant_id})
+            df_rest = pd.read_sql_query(f"SELECT * FROM {restaurants_table} WHERE id = %s", conn, params={"rid": restaurant_id})
         else:
             df_rest = pd.DataFrame()
     rest_name = None
@@ -817,7 +817,7 @@ def get_weather_series_for_restaurant(
     restaurants_table = _resolve_table_name(engine, "restaurants", aliases=["restaurant", "stores"]) or "restaurants"
     with engine.begin() as conn:
         if restaurants_table in inspector.get_table_names():
-            df_rest = pd.read_sql_query(f"SELECT * FROM {restaurants_table} WHERE id = :rid", conn, params={"rid": restaurant_id})
+            df_rest = pd.read_sql_query(f"SELECT * FROM {restaurants_table} WHERE id = %s", conn, params={"rid": restaurant_id})
         else:
             df_rest = pd.DataFrame()
     rest_name = None if df_rest.empty else _normalize_columns(df_rest).iloc[0].get("name")
@@ -832,11 +832,11 @@ def get_weather_series_for_restaurant(
             """
             SELECT restaurant_id, date, temp, rain, wind, humidity
             FROM weather_cache
-            WHERE restaurant_id = :rid AND date BETWEEN :start AND :end
+            WHERE restaurant_id = %s AND date BETWEEN %s AND %s
             ORDER BY date
             """,
             conn,
-            params={"rid": restaurant_id, "start": start_date, "end": end_date},
+            params=(restaurant_id, start_date, end_date),
             parse_dates=["date"],
         )
 
@@ -872,11 +872,11 @@ def get_weather_series_for_restaurant(
                 """
                 SELECT restaurant_id, date, temp, rain, wind, humidity
                 FROM weather_cache
-                WHERE restaurant_id = :rid AND date BETWEEN :start AND :end
+                WHERE restaurant_id = %s AND date BETWEEN %s AND %s
                 ORDER BY date
                 """,
                 conn,
-                params={"rid": restaurant_id, "start": start_date, "end": end_date},
+                params=(restaurant_id, start_date, end_date),
                 parse_dates=["date"],
             )
 
