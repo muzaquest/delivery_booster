@@ -20,6 +20,14 @@ args = "Start Delivery Booster"
 task = "workflow.run"
 args = "Restaurant Analytics Platform"
 
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "FastAPI Backend"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Streamlit Frontend"
+
 [[workflows.workflow]]
 name = "Restaurant Analytics Platform"
 author = "agent"
@@ -31,6 +39,30 @@ outputType = "webview"
 task = "shell.exec"
 args = "bash -c \"unset DATABASE_URL && export PYTHONPATH=$PWD:$PYTHONPATH && python -m uvicorn app.main:app --host localhost --port 8000 & sleep 5 && streamlit run streamlit_app.py --server.address 0.0.0.0 --server.port 5000 --server.headless true --server.allowRunOnSave false\""
 waitForPort = 5000
+
+[[workflows.workflow]]
+name = "FastAPI Backend"
+author = "agent"
+
+[workflows.workflow.metadata]
+outputType = "console"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python -m uvicorn app.main:app --host 0.0.0.0 --port 8000"
+waitForPort = 8000
+
+[[workflows.workflow]]
+name = "Streamlit Frontend"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "streamlit run streamlit_app.py --server.address 0.0.0.0 --server.port 5000 --server.headless true --server.allowRunOnSave false --server.enableCORS false --server.enableXsrfProtection false"
+waitForPort = 5000
+
+[workflows.workflow.metadata]
+outputType = "webview"
 
 [deployment]
 run = ["bash", "-c", "unset DATABASE_URL && export PYTHONPATH=$PWD:$PYTHONPATH && python -m uvicorn app.main:app --host localhost --port 8000 & sleep 5 && streamlit run streamlit_app.py --server.address 0.0.0.0 --server.port 5000 --server.headless true --server.allowRunOnSave false"]
@@ -47,7 +79,6 @@ externalPort = 5000
 [[ports]]
 localPort = 8000
 externalPort = 8000
-exposeLocalhost = true
 
 [env]
 PYTHONPATH = "$PYTHONPATH:."

@@ -241,7 +241,7 @@ def _aggregate_kpi(engine, start: date, end: date) -> dict:
                 # Fallback к старому способу
                 start_s, end_s = start.strftime('%Y-%m-%d'), end.strftime('%Y-%m-%d')
                 q = lambda t: pd.read_sql_query(
-                        f"SELECT SUM(sales) sales, SUM(orders) orders, SUM(ads_spend) ads_spend, SUM(ads_sales) ads_sales, AVG(rating) rating, SUM(cancelled_orders) canc FROM {t} WHERE stat_date BETWEEN ? AND ?",
+                        f"SELECT SUM(sales) sales, SUM(orders) orders, SUM(ads_spend) ads_spend, SUM(ads_sales) ads_sales, AVG(rating) rating, SUM(cancelled_orders) canc FROM {t} WHERE stat_date BETWEEN %s AND %s",
                         engine, params=(start_s, end_s)
                 )
                 g = q('grab_stats').iloc[0].fillna(0)

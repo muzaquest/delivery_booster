@@ -40,8 +40,8 @@ class DataAdapter:
         
         if self.use_mysql:
             # Получаем название ресторана
-            name_query = "SELECT restaurant_name FROM restaurant_mapping WHERE restaurant_id = %(rid)s"
-            name_df = pd.read_sql_query(name_query, self.engine, params={"rid": restaurant_id})
+            name_query = "SELECT restaurant_name FROM restaurant_mapping WHERE restaurant_id = %s"
+            name_df = pd.read_sql_query(name_query, self.engine, params=(restaurant_id,))
             restaurant_name = name_df.iloc[0][0] if not name_df.empty else None
             
             if not restaurant_name:
@@ -59,7 +59,7 @@ class DataAdapter:
                     grab_rating as rating,
                     grab_offline_min as offline_rate
                 FROM daily_facts
-                WHERE restaurant_name = %(rname)s AND stat_date BETWEEN %(start)s AND %(end)s
+                WHERE restaurant_name = %s AND stat_date BETWEEN %s AND %s
                 AND grab_sales > 0
                 ORDER BY stat_date
             """
@@ -78,12 +78,12 @@ class DataAdapter:
                     gojek_confirm_time as accepting_time,
                     gojek_delivery_time as delivery_time
                 FROM daily_facts
-                WHERE restaurant_name = %(rname)s AND stat_date BETWEEN %(start)s AND %(end)s
+                WHERE restaurant_name = %s AND stat_date BETWEEN %s AND %s
                 AND gojek_sales > 0
                 ORDER BY stat_date
             """
             
-            params = {"rname": restaurant_name, "start": start_date, "end": end_date}
+            params = (restaurant_name, start_date, end_date)
             grab_df = pd.read_sql_query(grab_query, self.engine, params=params)
             gojek_df = pd.read_sql_query(gojek_query, self.engine, params=params)
             
@@ -123,10 +123,10 @@ class DataAdapter:
                     AVG(NULLIF(grab_rating,0) + NULLIF(gojek_rating,0)) as rating,
                     SUM(total_cancelled) as cancels
                 FROM daily_facts
-                WHERE stat_date BETWEEN %(start)s AND %(end)s
+                WHERE stat_date BETWEEN %s AND %s
             """
             
-            df = pd.read_sql_query(query, self.engine, params={"start": start_date, "end": end_date})
+            df = pd.read_sql_query(query, self.engine, params=(start_date, end_date))
             if not df.empty:
                 row = df.iloc[0].fillna(0)
                 sales = float(row.get('sales', 0))
@@ -194,8 +194,8 @@ class DataAdapter:
         
         if self.use_mysql:
             # Получаем название ресторана
-            name_query = "SELECT restaurant_name FROM restaurant_mapping WHERE restaurant_id = %(rid)s"
-            name_df = pd.read_sql_query(name_query, self.engine, params={"rid": restaurant_id})
+            name_query = "SELECT restaurant_name FROM restaurant_mapping WHERE restaurant_id = %s"
+            name_df = pd.read_sql_query(name_query, self.engine, params=(restaurant_id,))
             restaurant_name = name_df.iloc[0][0] if not name_df.empty else None
             
             if not restaurant_name:
@@ -203,11 +203,11 @@ class DataAdapter:
             
             query = """
                 SELECT * FROM ml_dataset
-                WHERE restaurant_name = %(rname)s AND stat_date BETWEEN %(start)s AND %(end)s
+                WHERE restaurant_name = %s AND stat_date BETWEEN %s AND %s
                 ORDER BY stat_date
             """
             
-            return pd.read_sql_query(query, self.engine, params={"rname": restaurant_name, "start": start_date, "end": end_date})
+            return pd.read_sql_query(query, self.engine, params=(restaurant_name, start_date, end_date))
         else:
             # Пытаемся использовать существующий CSV
             try:
