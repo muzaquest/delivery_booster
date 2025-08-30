@@ -6,6 +6,16 @@ This is a comprehensive restaurant analytics platform that provides ML-powered s
 
 The platform supports both static dataset analysis (SQLite-based) and live API integration (PostgreSQL-based) for real-time analytics. It includes a FastAPI backend for data serving, a Streamlit frontend for visualization, and sophisticated ML models for sales prediction and anomaly detection.
 
+## Recent Changes
+
+### v0.3.0-live-db (stable) - August 30, 2025
+- **Fixed MySQL/MariaDB compatibility**: Replaced SQLite `strftime()` with `DATE_FORMAT()` for live databases
+- **Database dialect detection**: Added automatic detection based on `DATABASE_URL` environment variable  
+- **SQL placeholder standardization**: All queries use `sa_text()` wrapper with named parameters (`:start`, `:end`, `:rid`)
+- **Dual database support**: SQLite for demo mode, MySQL/PostgreSQL for production
+- **Report generation**: Stable text and basic reports working with live database connections
+- **API endpoints**: `/health`, `/report-text`, `/restaurants` fully functional with MySQL backend
+
 ## User Preferences
 
 Preferred communication style: Simple, everyday language.
